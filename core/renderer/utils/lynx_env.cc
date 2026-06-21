@@ -550,12 +550,6 @@ bool LynxEnv::FixRadonTransitionPropertyRemoveBug() {
   return fix_radon_transition_property_remove_bug;
 }
 
-uint32_t LynxEnv::EnableGCOnceOnIdle() {
-  static uint32_t cached_enable_gc_once_on_idle =
-      static_cast<uint32_t>(GetLongEnv(Key::ENABLE_GC_ONCE_ON_IDLE, 0));
-  return cached_enable_gc_once_on_idle;
-}
-
 bool LynxEnv::EnableCSSInlineVariables() {
   static bool enable_css_inline_variables =
       GetBoolEnv(Key::ENABLE_CSS_INLINE_VARIABLES, false);
@@ -595,11 +589,15 @@ bool LynxEnv::EnableHarmonyDrawBehind() {
 }
 
 bool LynxEnv::EnableHarmonyNewImage() {
-  return GetBoolEnv(Key::ENABLE_HARMONY_NEW_IMAGE, true);
+  return GetBoolEnv(Key::ENABLE_HARMONY_NEW_IMAGE, false);
 }
 
 bool LynxEnv::EnableHarmonyGestureInterrupterUserData() {
   return GetBoolEnv(Key::ENABLE_HARMONY_GESTURE_INTERRUPTER_USER_DATA, false);
+}
+
+bool LynxEnv::EnableHarmonyTextCustomEmoji() {
+  return GetBoolEnv(Key::ENABLE_HARMONY_TEXT_CUSTOM_EMOJI, true);
 }
 
 bool LynxEnv::EnableUnifyFixedBehavior() {
@@ -640,8 +638,13 @@ bool LynxEnv::FixListWithSyncFlush() {
   return GetBoolEnv(Key::FIX_LIST_WITH_SYNC_FLUSH, false);
 }
 
+bool LynxEnv::EnableNativeList() {
+  return GetBoolEnv(Key::ENABLE_NATIVE_LIST, false);
+}
+
 bool LynxEnv::FixOldFixedInsertSelfUseRenderParent() {
-  return GetBoolEnv(Key::FIX_OLD_FIXED_INSERT_SELF_USE_RENDER_PARENT, false);
+  // TODO: Remove this setting in the next version.
+  return GetBoolEnv(Key::FIX_OLD_FIXED_INSERT_SELF_USE_RENDER_PARENT, true);
 }
 
 bool LynxEnv::FixFiberReinsertDetachFromOldRenderParent() {
@@ -667,6 +670,10 @@ bool LynxEnv::EnableReadableStreamMemFix() {
 
 bool LynxEnv::EnableElementApiNewRegistration() {
   return GetBoolEnv(Key::ENABLE_ELEMENT_API_NEW_REGISTRATION, false);
+}
+
+bool LynxEnv::EnableElementInvokeUIMethodPendingTask() {
+  return GetBoolEnv(Key::ENABLE_ELEMENT_INVOKE_UI_METHOD_PENDING_TASK, false);
 }
 }  // namespace tasm
 }  // namespace lynx

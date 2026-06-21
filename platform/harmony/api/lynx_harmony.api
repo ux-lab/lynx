@@ -44,6 +44,10 @@ export interface HarmonyStateListener {
   onError: (error: string) => void;
 }
 
+export interface DebugRouterMessageHandler {
+  handle: (params: string) => string;
+}
+
 export class LynxDevToolEnv {
   public static initDevToolEnv(): void;
   public static setSwitch(key: string, value: boolean): void;
@@ -62,6 +66,8 @@ export class DebugRouter {
   public static removeGlobalHandler(handler: HarmonyGlobalHandler): void;
   public static sendDataAsync(type: string, session: number, data: string): void;
   public static addSessionHandler(handler: HarmonySessionHandler): void;
+  public static addMessageHandler(name: string, handler: DebugRouterMessageHandler): void;
+  public static removeMessageHandler(name: string): void;
   public static handleSchema(url: string): boolean;
   public static getAppInfoByKey(key: string): string;
   public static addStateListener(listener: HarmonyStateListener): void;
@@ -190,6 +196,7 @@ export abstract class LynxNodeController extends NodeController {
   aboutToReuse(params: Record<string, ESObject>): void;
   aboutToRecycle(): void;
   sendGlobalEvent(name: string, params: Object[]): void;
+  getLynxElementRoot(callback: (result: LynxElement | null) => void): void;
   override onMeasureSize(selfLayoutInfo: GeometryInfo, children: Measurable[], constraint: ConstraintSizeOptions): void;
   override onPlaceChildren(selfLayoutInfo: GeometryInfo, children: Layoutable[], constraint: ConstraintSizeOptions): void;
   reload(): void;
@@ -256,6 +263,7 @@ export interface LynxViewBuilder {
   enableAirStrictMode?: boolean;
   lynxImageConfig?: LynxImageConfig;
   fontScale?: number;
+  colorScheme?: ColorScheme;
 }
 
 export enum MeasureMode {
@@ -267,6 +275,11 @@ export enum MeasureMode {
 export enum ThreadStrategyForRendering {
   ALL_ON_UI = 0
   MOST_ON_TASM = 1
+}
+
+export enum ColorScheme {
+  LIGHT = 0
+  DARK = 1
 }
 
 export class LynxContext implements IContext {
@@ -302,6 +315,7 @@ export class LynxContext implements IContext {
   public setExtraTiming(extraTiming: LynxExtraTiming): void;
   public putParamsForReportingEvents(params: ReadonlyMap<string, LynxReportEventPropValue>): void;
   updateFontScale(scale: number): void;
+  updateColorScheme(scheme: ColorScheme): void;
   public setContextData(data: Record<string, Object>): void;
   public getContextData(): Record<string, Object> | undefined;
   public setMediaResourceFetcher(mediaResourceFetcher: LynxMediaResourceFetcher): void;
@@ -388,6 +402,15 @@ export class LynxUIMethodConstants {
   public static OPERATION_ERROR: any; = 8
 }
 
+export interface LynxEmojiResource {
+  name: string;
+  uri: string | number;
+}
+
+export interface LynxEmojiResourceFetcher {
+  getEmojiResources(): Array<LynxEmojiResource>;
+}
+
 export const LynxEnv: LynxEnvironment {
   public initialize(context: common.Context): void;
   setAppInfo(appInfo: Map<string, string>): void;
@@ -401,6 +424,7 @@ export const LynxEnv: LynxEnvironment {
   public setQuickjsDebugEnabled(enabled: boolean): void;
   public setTracingDirPath(tracingDirPath: string): void;
   public getTracingDirPath(): string;
+  public setEmojiResourceFetcher(fetcher: LynxEmojiResourceFetcher): void;
   public static setCacheDirPath(cacheDirPath: string): void;
   public isDebugModeEnabled(): boolean;
   public setLogBoxEnabled(enabled: boolean): void;
@@ -568,6 +592,10 @@ export class UIGroup extends UIBase {
   getContentSize(content: lynx.NativeContent): [number, number];
   children: lynx.NativeContent[]; = []
   hasCustomLayout: boolean; = true
+}
+
+export class LynxElement {
+  toJSONString(callback: (result: string | null) => void): void;
 }
 
 export class ShadowNodeOwner {
@@ -1167,6 +1195,7 @@ export enum LynxTrailKey {
   ENABLE_NEW_ANIMATOR_FIBER = 'enable_new_animator_fiber'
   POST_DATA_BEFORE_UPDATE = 'post_data_before_update'
   ENABLE_REPORT_LIST_ITEM_LIFE_STATISTIC = 'enable_report_list_item_life_statistic'
+  ENABLE_NATIVE_LIST = 'enable_native_list'
   ENABLE_ASYNC_DESTROY_ENGINE = 'enable_async_destroy_engine'
   CONCURRENT_LOOP_HIGH_PRIORITY_WORKER_COUNT_PERCENT = 'concurrent_loop_high_priority_worker_count_percent'
   ENABLE_DECOUPLED_LIST = 'enable_decoupled_list'
@@ -1183,6 +1212,7 @@ export enum LynxTrailKey {
   FIX_FIBER_REINSERT_DETACH_FROM_OLD_RENDER_PARENT = 'fix_fiber_reinsert_detach_from_old_render_parent'
   ENABLE_NEW_STYLING_PIPELINE = 'enable_new_styling_pipeline'
   ENABLE_ELEMENT_API_NEW_REGISTRATION = 'enable_element_api_new_registration'
+  ENABLE_ELEMENT_INVOKE_UI_METHOD_PENDING_TASK = 'enable_element_invoke_ui_method_pending_task'
 }
 
 export interface LynxUIRenderer {
@@ -1242,6 +1272,8 @@ export class DevToolSettings {
   public static setDOMTreeEnabled(enabled: boolean): void;
   public static isLongPressMenuEnabled(): boolean;
   public static setLongPressMenuEnabled(enabled: boolean): void;
+  public static isHighlightTouchEnabled(): boolean;
+  public static setHighlightTouchEnabled(enabled: boolean): void;
   public static isPreviewScreenshotEnabled(): boolean;
   public static setPreviewScreenshotEnabled(enabled: boolean): void;
   public static isPixelCopyEnabled(): boolean;
@@ -1258,6 +1290,7 @@ export class DevToolSettings {
   public static readonly SP_KEY_ENABLE_QUICKJS_CACHE: string; = 'enable_quickjs_cache'
   public static readonly SP_KEY_ENABLE_DOM_TREE: string; = 'enable_dom_tree'
   public static readonly SP_KEY_ENABLE_LONG_PRESS_MENU: string; = 'enable_long_press_menu'
+  public static readonly SP_KEY_ENABLE_HIGHLIGHT_TOUCH: string; = 'enable_highlight_touch'
   public static readonly SP_KEY_ENABLE_PREVIEW_SCREEN_SHOT: string; = 'enable_preview_screen_shot'
   public static readonly SP_KEY_ENABLE_PIXEL_COPY: string; = 'enable_pixel_copy'
   public static readonly SP_KEY_ENABLE_PERF_MONITOR_DEBUG: string; = 'enable_perf_monitor_debug'

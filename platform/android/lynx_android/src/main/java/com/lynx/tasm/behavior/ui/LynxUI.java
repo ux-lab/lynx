@@ -25,7 +25,6 @@ import static com.lynx.tasm.behavior.StyleConstants.PLATFORM_PERSPECTIVE_UNIT_NU
 import static com.lynx.tasm.behavior.StyleConstants.PLATFORM_PERSPECTIVE_UNIT_VH;
 import static com.lynx.tasm.behavior.StyleConstants.PLATFORM_PERSPECTIVE_UNIT_VW;
 import static com.lynx.tasm.behavior.StyleConstants.TRANSFORM_ROTATE;
-import static com.lynx.tasm.behavior.StyleConstants.TRANSFORM_TRANSLATE;
 import static com.lynx.tasm.behavior.StyleConstants.VISIBILITY_VISIBLE;
 import static com.lynx.tasm.behavior.ui.accessibility.LynxAccessibilityWrapper.ACCESSIBILITY_ELEMENT_DEFAULT;
 import static com.lynx.tasm.behavior.ui.accessibility.LynxAccessibilityWrapper.ACCESSIBILITY_ELEMENT_TRUE;
@@ -80,7 +79,6 @@ import com.lynx.tasm.behavior.ui.shapes.BasicShape;
 import com.lynx.tasm.behavior.ui.shapes.LynxOffsetCalculator;
 import com.lynx.tasm.behavior.ui.text.AndroidText;
 import com.lynx.tasm.behavior.ui.utils.BackgroundManager;
-import com.lynx.tasm.behavior.ui.utils.PlatformLength;
 import com.lynx.tasm.behavior.ui.utils.TransformRaw;
 import com.lynx.tasm.behavior.ui.utils.ViewHelper;
 import com.lynx.tasm.behavior.ui.view.AndroidView;
@@ -112,6 +110,8 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
   private float mHueRotateAmount = 0.0f;
 
   private static final float OFFSET_ROTATE_AUTO = -1024.0f;
+  private static final float OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE = -1000000.0f;
+  private static final float OFFSET_ROTATE_AUTO_WITH_ANGLE_RANGE = 360.0f;
 
   private BackgroundManager mBackgroundManager;
   private boolean mSetVisibleByCSS = true;
@@ -170,11 +170,9 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
   protected BasicShape mOffsetPath;
   protected float mOffsetDistance;
   protected float mOffsetRotate = OFFSET_ROTATE_AUTO;
+  protected float mOffsetRotateAngle = 0.0f;
   protected boolean mIsAutoOffsetRotate = true;
   protected boolean mOffsetHasChanged = false;
-  protected float mLastOffsetEffectX;
-  protected float mLastOffsetEffectY;
-  protected float mLastOffsetEffectRotate;
 
   @Override
   public void onDrawingPositionChanged() {
@@ -981,6 +979,9 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
           mTransitionAnimator.endTransitionAnimator(AnimationConstant.PROP_TRANSFORM);
         }
         mBackgroundManager.setTransform(mTransformRaw);
+        if (mOffsetPath != null) {
+          mOffsetHasChanged = true;
+        }
       }
     }
     if (mOffsetHasChanged) {
@@ -988,7 +989,7 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
         float[] result = LynxOffsetCalculator.pointAtProgress(
             mOffsetPath.getPath(getWidth(), getHeight()), mOffsetDistance);
         if (mIsAutoOffsetRotate) {
-          applyOffsetAndRotate(result[0], result[1], result[2]);
+          applyOffsetAndRotate(result[0], result[1], result[2] + mOffsetRotateAngle);
         } else {
           applyOffsetAndRotate(result[0], result[1], mOffsetRotate);
         }
@@ -1013,24 +1014,18 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
   }
 
   public void applyOffsetAndRotate(float offsetX, float offsetY, float rotate) {
+    // Keep motion path translation separate from CSS transform so scale/pivot updates
+    // do not remap the path position.
+    mBackgroundManager.setMotionPathPostTranslate(new PointF(offsetX, offsetY));
+
     List<TransformRaw> offsetEffect = new ArrayList<>();
-    offsetEffect.add(TransformRaw.createTransformRaw(TRANSFORM_TRANSLATE,
-        new PlatformLength(offsetX - mLastOffsetEffectX, PLATFORM_LENGTH_UNIT_NUMBER),
-        PLATFORM_LENGTH_UNIT_NUMBER,
-        new PlatformLength(offsetY - mLastOffsetEffectY, PLATFORM_LENGTH_UNIT_NUMBER),
-        PLATFORM_LENGTH_UNIT_NUMBER, new PlatformLength(0, PLATFORM_LENGTH_UNIT_NUMBER),
-        PLATFORM_LENGTH_UNIT_NUMBER));
-    offsetEffect.add(TransformRaw.createTransformRaw(TRANSFORM_ROTATE,
-        rotate - mLastOffsetEffectRotate, PLATFORM_LENGTH_UNIT_NUMBER, 0,
-        PLATFORM_LENGTH_UNIT_NUMBER, 0, PLATFORM_LENGTH_UNIT_NUMBER));
-    mLastOffsetEffectX = offsetX;
-    mLastOffsetEffectY = offsetY;
-    mLastOffsetEffectRotate = rotate;
-    if (mBackgroundManager.getTransformProps() == null) {
-      mBackgroundManager.setTransform(offsetEffect);
-    } else {
-      mBackgroundManager.appendTransform(offsetEffect);
+    offsetEffect.add(
+        TransformRaw.createTransformRaw(TRANSFORM_ROTATE, rotate, PLATFORM_LENGTH_UNIT_NUMBER, 0,
+            PLATFORM_LENGTH_UNIT_NUMBER, 0, PLATFORM_LENGTH_UNIT_NUMBER));
+    if (mTransformRaw != null) {
+      offsetEffect.addAll(mTransformRaw);
     }
+    mBackgroundManager.setTransform(offsetEffect);
   }
 
   public int getBackgroundColor() {
@@ -1306,15 +1301,39 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
   }
 
   @Override
+  public boolean calculateStickyTranslateWithOffset(
+      int offset, boolean isVertical, int scrollerSize, int maxOffset) {
+    boolean res =
+        super.calculateStickyTranslateWithOffset(offset, isVertical, scrollerSize, maxOffset);
+    PointF trans = null;
+    if (res && mSticky != null) {
+      trans = new PointF(mSticky.x, mSticky.y);
+    }
+    if (mBackgroundManager != null) {
+      mBackgroundManager.setPostTranslate(trans);
+    }
+    return res;
+  }
+
+  @Override
   public boolean checkStickyOnParentScroll(int l, int t) {
     boolean ret = super.checkStickyOnParentScroll(l, t);
     PointF trans = null;
     if (mSticky != null) {
       trans = new PointF(mSticky.x, mSticky.y);
     }
-    mBackgroundManager.setPostTranlate(trans);
-
+    if (mBackgroundManager != null) {
+      mBackgroundManager.setPostTranslate(trans);
+    }
     return ret;
+  }
+
+  @Override
+  public void setStickyTranslate(PointF trans) {
+    super.setStickyTranslate(trans);
+    if (mBackgroundManager != null) {
+      mBackgroundManager.setPostTranslate(trans);
+    }
   }
 
   @LynxProp(name = PropsConstants.FILTER)
@@ -1496,12 +1515,26 @@ public abstract class LynxUI<T extends View> extends LynxBaseUI implements IProc
     if (mOffsetRotate != offsetRotate) {
       mOffsetRotate = offsetRotate;
       mOffsetHasChanged = true;
-      if (mOffsetRotate != OFFSET_ROTATE_AUTO) {
-        mIsAutoOffsetRotate = false;
-      } else {
+      if (mOffsetRotate == OFFSET_ROTATE_AUTO) {
         mIsAutoOffsetRotate = true;
+        mOffsetRotateAngle = 0.0f;
+      } else if (isEncodedAutoOffsetRotate(mOffsetRotate)) {
+        mIsAutoOffsetRotate = true;
+        mOffsetRotateAngle = decodeAutoOffsetRotateAngle(mOffsetRotate);
+      } else {
+        mIsAutoOffsetRotate = false;
+        mOffsetRotateAngle = 0.0f;
       }
     }
+  }
+
+  private static boolean isEncodedAutoOffsetRotate(float rotate) {
+    return rotate <= OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE
+        && rotate > OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE - OFFSET_ROTATE_AUTO_WITH_ANGLE_RANGE;
+  }
+
+  private static float decodeAutoOffsetRotateAngle(float rotate) {
+    return isEncodedAutoOffsetRotate(rotate) ? OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE - rotate : 0.0f;
   }
 
   protected void initAccessibilityDelegate() {}

@@ -20,9 +20,10 @@
 #include "clay/ui/component/page_view.h"
 #include "clay/ui/component/scroll_wrapper.h"
 #include "clay/ui/event/gesture_event.h"
+#include "clay/ui/gesture/gesture_manager.h"
 #include "clay/ui/gesture/scrollable_direction.h"
 #include "clay/ui/gesture/tap_gesture_recognizer.h"
-#ifndef ENABLE_NATIVE_LIST
+#ifndef LYNX_ENABLE_CLAY_NATIVE_LIST
 #include "clay/ui/component/list/list_wrapper.h"
 #endif
 
@@ -91,6 +92,13 @@ void NestedScrollable::SetScrollEnabled(bool enabled) {
       drag_recognizer_ = nullptr;
 #endif
     }
+  }
+}
+
+void NestedScrollable::StopAnimation() {
+  Scrollable::StopAnimation();
+  if (wheel_animator_ && wheel_animator_->IsRunning()) {
+    wheel_animator_->Cancel();
   }
 }
 
@@ -480,7 +488,7 @@ NestedScrollable* NestedScrollable::GetScrollable(BaseView* view) {
     // TODO(liuguoliang): common method to find scrollable view
     return static_cast<ScrollWrapper*>(view)->GetScrollView();
   }
-#ifndef ENABLE_NATIVE_LIST
+#ifndef LYNX_ENABLE_CLAY_NATIVE_LIST
   else if (view->Is<ListWrapper>()) {
     return static_cast<ListWrapper*>(view)->GetListView();
   }
@@ -495,6 +503,17 @@ void NestedScrollable::DispatchMouseWheelEvent(const PointerEvent& event) {
   NestedScrollable* s =
       signal_scroll_started_ ? this : FindAncestorNestedDraggableView();
   if (!s) {
+    return;
+  }
+  if (page_view()->gesture_manager()->ShouldInterceptGesture()) {
+    s->StopAnimation();
+    s->SetScrollStatus(ScrollStatus::kIdle);
+    const bool should_end_signal = handle_signal_event_;
+    signal_scroll_started_ = false;
+    handle_signal_event_ = false;
+    if (should_end_signal) {
+      page_view()->gesture_manager()->EndMouseWheelTransactionByForce();
+    }
     return;
   }
   FloatPoint delta = {event.scroll_delta_x, event.scroll_delta_y};

@@ -20,6 +20,7 @@
 #include "core/renderer/utils/value_utils.h"
 #include "core/shell/lynx_engine.h"
 #include "core/shell/lynx_shell.h"
+#include "core/value_wrapper/value_wrapper_utils.h"
 
 namespace lynx::tasm {
 namespace {
@@ -235,6 +236,7 @@ NativePaintingCtxPlatformRef::ReconstructEventTargetTreeRecursively(
   auto event_target_tree = event_target_helper_->GetRootEventTarget();
   if (need_reconstruct_event_target_tree_ == false &&
       event_target_tree != nullptr) {
+    event_target_helper_->RefreshScrollOffsets();
     if (did_reconstruct != nullptr) {
       *did_reconstruct = false;
     }
@@ -246,8 +248,12 @@ NativePaintingCtxPlatformRef::ReconstructEventTargetTreeRecursively(
   }
   TRACE_EVENT(LYNX_TRACE_CATEGORY,
               NATIVE_PAINTING_CONTEXT_RECONSTRUCT_EVENT_TARGET_TREE);
-  return event_target_helper_->ReconstructEventTargetTreeRecursively(
+  auto target = event_target_helper_->ReconstructEventTargetTreeRecursively(
       fml::static_ref_ptr_cast<PlatformRendererImpl>(page_renderer->second));
+  if (target != nullptr) {
+    event_target_helper_->RefreshScrollOffsets();
+  }
+  return target;
 }
 
 std::vector<int32_t>
@@ -340,21 +346,21 @@ void NativePaintingCtxPlatformRef::UpdateAttributes(
 void NativePaintingCtxPlatformRef::InvokeUIMethod(
     int32_t id, const std::string &method, const lepus::Value &params,
     base::MoveOnlyClosure<void, int32_t, const pub::Value &> callback) {
-  base::MoveOnlyClosure<void, int32_t, const lepus::Value &> cb =
-      [engine_actor = engine_actor_, callback = std::move(callback)](
-          int32_t code, const lepus::Value &data) mutable {
-        if (engine_actor == nullptr) {
-          return;
-        }
-        lepus::Value data_copy = data;
-        engine_actor->Act([callback = std::move(callback), code,
-                           data = std::move(data_copy)](auto &engine) mutable {
-          callback(code, PubLepusValue(data));
-        });
-      };
-
   // Invoke ui method on the event target.
   if (method == "boundingClientRect") {
+    base::MoveOnlyClosure<void, int32_t, const lepus::Value &> cb =
+        [engine_actor = engine_actor_, callback = std::move(callback)](
+            int32_t code, const lepus::Value &data) mutable {
+          if (engine_actor == nullptr) {
+            return;
+          }
+          lepus::Value data_copy = data;
+          engine_actor->Act(
+              [callback = std::move(callback), code,
+               data = std::move(data_copy)](auto &engine) mutable {
+                callback(code, PubLepusValue(data));
+              });
+        };
     if (ReconstructEventTargetTreeRecursively() == nullptr) {
       cb(LynxGetUIResult::UNKNOWN,
          lepus::Value("failed to reconstruct event target tree"));
@@ -364,8 +370,30 @@ void NativePaintingCtxPlatformRef::InvokeUIMethod(
   }
   // Invoke ui method on the platform renderer.
   else {
-    cb(LynxGetUIResult::UNKNOWN,
-       lepus::Value("method not supported: " + method));
+    base::MoveOnlyClosure<void, int32_t, const pub::Value &> cb =
+        [engine_actor = engine_actor_, callback = std::move(callback)](
+            int32_t code, const pub::Value &data) mutable {
+          if (engine_actor == nullptr) {
+            return;
+          }
+          lepus::Value data_copy =
+              pub::ValueUtils::ConvertValueToLepusValue(data);
+          engine_actor->Act(
+              [callback = std::move(callback), code,
+               data = std::move(data_copy)](auto &engine) mutable {
+                callback(code, PubLepusValue(data));
+              });
+        };
+    InvokePlatformRendererUIMethod(id, method, params, std::move(cb));
+  }
+}
+
+void NativePaintingCtxPlatformRef::InvokePlatformRendererUIMethod(
+    int32_t id, const std::string &method, const lepus::Value &params,
+    base::MoveOnlyClosure<void, int32_t, const pub::Value &> callback) {
+  if (callback) {
+    callback(LynxGetUIResult::UNKNOWN,
+             PubLepusValue(lepus::Value("method not supported: " + method)));
   }
 }
 

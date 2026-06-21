@@ -53,6 +53,7 @@
 #import <Lynx/LynxView.h>
 #import <Lynx/UIView+Lynx.h>
 #import <malloc/malloc.h>
+#import <math.h>
 #import "LBSCoreGraphicsPathParser.h"
 #import "LynxFeatureCounter.h"
 #import "LynxFilterUtil.h"
@@ -65,7 +66,19 @@ static const short OVERFLOW_X_VAL = 0x01;
 static const short OVERFLOW_Y_VAL = 0x02;
 short const OVERFLOW_XY_VAL = 0x03;
 short const OVERFLOW_HIDDEN_VAL = 0x00;
+static const NSInteger INVALID_STICKY_SIGN = -1;
 static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
+static const CGFloat OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE = -1000000.f;
+static const CGFloat OFFSET_ROTATE_AUTO_WITH_ANGLE_RANGE = 360.f;
+
+static BOOL LynxIsEncodedAutoOffsetRotate(CGFloat rotate) {
+  return rotate <= OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE &&
+         rotate > OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE - OFFSET_ROTATE_AUTO_WITH_ANGLE_RANGE;
+}
+
+static CGFloat LynxDecodeAutoOffsetRotateAngle(CGFloat rotate) {
+  return LynxIsEncodedAutoOffsetRotate(rotate) ? OFFSET_ROTATE_AUTO_WITH_ANGLE_BASE - rotate : 0.f;
+}
 
 #define IS_ZERO(num) (fabs(num) < 0.0000000001)
 
@@ -74,8 +87,28 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
 @property(nonatomic) CATransform3D lastTransformWithoutRotate;
 @property(nonatomic) CATransform3D lastTransformWithoutRotateXY;
 @property(nonatomic, readwrite) CATransform3D offsetEffectTransform;
+@property(nonatomic, readwrite) CATransform3D baseTransform;
 @property(nonatomic, readwrite) CGFloat lastOffsetX;
 @property(nonatomic, readwrite) CGFloat lastOffsetY;
+@property(nonatomic, readwrite) BOOL hasOffsetEffect;
+@end
+
+@interface StickyRange : NSObject
+@property(nonatomic, assign) BOOL valid;
+@property(nonatomic, assign) CGFloat start;
+@property(nonatomic, assign) CGFloat end;
+@end
+
+@implementation StickyRange
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _valid = NO;
+    _start = 0.f;
+    _end = CGFLOAT_MAX;
+  }
+  return self;
+}
 @end
 
 @interface LynxUI () <NSCopying>
@@ -90,13 +123,19 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
 @property(nonatomic, assign) BOOL accessibilityAutoScroll;
 @property(nonatomic, strong) NSArray* accessibilityBeingExclusiveFocusedNodes;
 @property(nonatomic, assign) NSInteger gestureArenaMemberId;
+@property(nonatomic) CGFloat offsetRotateAngle;
 
 // accessibility
 @property(nonatomic, nullable, strong) NSString* lynxAccessibilityStatus;
 @property(nonatomic, strong) NSString* lynxAccessibilityLabel;
 
 @property(nonatomic, nullable, strong) LynxUILastInfo* lastInfo;
+@property(nonatomic, assign) NSInteger stickyScrollerSign;
 
+- (void)updateNewSticky:(NSArray*)info;
+- (LynxUI*)getStickyScroller;
+- (void)removeSelfFromStickyScrollerIfNeeded;
+- (void)bindStickyScrollerIfNeeded:(LynxUIScroller*)scroller;
 - (void)prepareKeyframeManager;
 - (void)prepareLayoutAnimationManager;
 - (void)prepareTransitionAnimationManager;
@@ -201,11 +240,13 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
   _updatedFrame = CGRectZero;
   _lastUpdatedFrame = CGRectZero;
   _overflow = OVERFLOW_HIDDEN_VAL;
+  _stickyScrollerSign = INVALID_STICKY_SIGN;
   _autoResumeAnimation = YES;
   _enableNewTransformOrigin = YES;
   _enableReuseAnimationState = YES;
   _enableExposureUIMargin = kLynxPropUndefined;
   _animationInfos = nil;
+  _offsetRotate = OFFSET_ROTATE_AUTO;
   _isAutoOffsetRotate = YES;
 }
 
@@ -391,20 +432,201 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
   // override by subclasses
 }
 
-- (void)updateSticky:(NSArray*)info {
-  if (info == nil || [info count] < 4) {
+- (void)updateSticky:(nullable NSArray*)info {
+  if (self.context.enableNewSticky) {
+    [self updateNewSticky:info];
+  } else {
+    if (info == nil || [info count] < 4) {
+      _sticky = nil;
+      return;
+    }
+    LynxUI* uiParent = (LynxUI*)self.parent;
+    if ([uiParent isKindOfClass:[LynxUIScroller class]] ||
+        [uiParent isKindOfClass:LynxUIScrollView.class]) {
+      LynxUIScroller* parent = (LynxUIScroller*)uiParent;
+      parent.enableSticky = YES;
+      _sticky = info;
+    }
+  }
+}
+
+- (void)updateNewSticky:(NSArray*)info {
+  if (info == nil || [info count] < 10) {
+    if (_sticky) {
+      // sticky item is not sticky item or has illegal, need to reset sticky translate.
+      [self removeSelfFromStickyScrollerIfNeeded];
+      [self.backgroundManager setPostTranslate:CGPointZero];
+    }
     _sticky = nil;
     return;
   }
-  LynxUI* uiParent = (LynxUI*)self.parent;
-  if ([uiParent isKindOfClass:[LynxUIScroller class]] ||
-      [uiParent isKindOfClass:LynxUIScrollView.class]) {
-    LynxUIScroller* parent = (LynxUIScroller*)uiParent;
-    parent.enableSticky = YES;
-    _sticky = info;
+
+  // If has no sticky scroller currently, still need to save sticky info.
+  // stickyParent: scroller
+  // info[0]: sticky left
+  // info[1]: sticky top
+  // info[2]: sticky right
+  // info[3]: sticky bottom
+  // info[4]: sticky item's direct parent's width
+  // info[5]: sticky item's direct parent's height
+  // info[6]: sticky item's relative left to scroller
+  // info[7]: sticky item's relative top to scroller
+  // info[8]: sticky item's parent relative left to scroller
+  // info[9]: sticky item's parent relative top to scroller
+  _sticky = info;
+  LynxUI* uiScroller = [self getStickyScroller];
+  if (uiScroller != nil) {
+    LynxUIScroller* lynxUIScroller = (LynxUIScroller*)uiScroller;
+    [self bindStickyScrollerIfNeeded:lynxUIScroller];
+    [lynxUIScroller refreshStickyChildren];
   } else {
+    // TODO: compact for scroll-view new arch.
+    // Has no valid sticky scroller, need to reset sticky translate.
+    // But we no need to clear sticky info.
+    [self removeSelfFromStickyScrollerIfNeeded];
+    [self.backgroundManager setPostTranslate:CGPointZero];
+  }
+}
+
+- (LynxUI*)getStickyScroller {
+  LynxUI* uiParent = (LynxUI*)self.parent;
+  while (uiParent != nil) {
+    if ([uiParent isKindOfClass:[LynxUIScroller class]] &&
+        ![uiParent isKindOfClass:[LynxUIListContainer class]]) {
+      return uiParent;
+    }
+    uiParent = uiParent.parent;
+  }
+  return nil;
+}
+
+- (void)bindStickyScrollerIfNeeded:(LynxUIScroller*)uiScroller {
+  if (uiScroller != nil) {
+    if (self.stickyScrollerSign != INVALID_STICKY_SIGN &&
+        self.stickyScrollerSign != uiScroller.sign) {
+      // If current sticky scroller is not uiScroller, remove from current sticky scroller.
+      [self removeSelfFromStickyScrollerIfNeeded];
+    }
+    self.stickyScrollerSign = uiScroller.sign;
+    [uiScroller addStickyChildSign:self.sign];
+  }
+}
+
+- (void)removeSelfFromStickyScrollerIfNeeded {
+  if (self.stickyScrollerSign == INVALID_STICKY_SIGN) {
     return;
   }
+  LynxUI* stickyScroller = [self.context.uiOwner findUIBySign:self.stickyScrollerSign];
+  if ([stickyScroller isKindOfClass:[LynxUIScroller class]]) {
+    [(LynxUIScroller*)stickyScroller removeStickyChildSign:self.sign];
+  } else if ([stickyScroller isKindOfClass:[LynxUIScrollView class]]) {
+    // TODO: compact for scroll-view new arch.
+  }
+  self.stickyScrollerSign = INVALID_STICKY_SIGN;
+}
+
+- (void)onNodeRemoved {
+  [super onNodeRemoved];
+  if (self.context.enableNewSticky) {
+    [self removeSelfFromStickyScrollerIfNeeded];
+    [self.backgroundManager setPostTranslate:CGPointZero];
+  }
+}
+
+- (void)calculateStickyTranslateWithOffset:(CGFloat)offset
+                                isVertical:(BOOL)isVertical
+                              scrollerSize:(CGFloat)scrollerSize
+                                 maxOffset:(CGFloat)maxOffset {
+  if (self.sticky == nil || self.sticky.count < 10) {
+    return;
+  }
+  CGFloat leadingInset = 0.f;      // sticky left or top
+  CGFloat trailingInset = 0.f;     // sticky right or bottom
+  CGFloat relativePosition = 0.f;  // sticky item position in scroller content coordinates.
+  CGFloat parentRelativePosition =
+      0.f;                   // direct parent's position in scroller content coordinates.
+  CGFloat itemSize = 0.f;    // sticky item's size on the scrolling axis.
+  CGFloat parentSize = 0.f;  // direct parent's size on the scrolling axis.
+  if (isVertical) {
+    leadingInset = [self.sticky[1] floatValue];
+    trailingInset = [self.sticky[3] floatValue];
+    parentSize = [self.sticky[5] floatValue];
+    relativePosition = [self.sticky[7] floatValue];
+    // If sticky item's parent is scroll-view, parentRelativePosition should be 0.f.
+    parentRelativePosition = [self.sticky[9] floatValue];
+    itemSize = CGRectGetHeight(self.frame);
+  } else {
+    leadingInset = [self.sticky[0] floatValue];
+    trailingInset = [self.sticky[2] floatValue];
+    parentSize = [self.sticky[4] floatValue];
+    relativePosition = [self.sticky[6] floatValue];
+    // If sticky item's parent is scroll-view, parentRelativePosition should be 0.f.
+    parentRelativePosition = [self.sticky[8] floatValue];
+    itemSize = CGRectGetWidth(self.frame);
+  }
+
+  // 1. calculate sticky range.
+  StickyRange* leadingRange = [StickyRange new];
+  StickyRange* trailingRange = [StickyRange new];
+  // When item scrolling into the distance which <= sticky top, the item should be into sticky top
+  // status. relativePosition - offset <= leadingInset
+  leadingRange.start = relativePosition - leadingInset;
+  // When item scrolling into the distance <= sticky bottom, the item should be into sticky bottom
+  // status. offset + scrollerSize - trailingInset <= relativeBottom
+  CGFloat relativeBottom = relativePosition + itemSize;
+  trailingRange.end = relativeBottom + trailingInset - scrollerSize;
+  leadingRange.valid = leadingRange.start < maxOffset;
+  trailingRange.valid = trailingRange.end > 0.f;
+  if (!leadingRange.valid && !trailingRange.valid) {
+    // If neither the leading range nor the trailing range is valid, keep the original position.
+    [self.backgroundManager setPostTranslate:CGPointZero];
+    return;
+  }
+
+  BOOL isDirectChild = parentSize < 0.f;
+  leadingRange.end = maxOffset;
+  if (leadingRange.valid && !isDirectChild) {
+    // In the grandchild case, the leading range end is also constrained by the direct parent's end
+    // edge. leadingInset + itemSize <= parentRelativeBottom - offset
+    CGFloat parentRelativeBottom = parentRelativePosition + parentSize;
+    leadingRange.end = MIN(parentRelativeBottom - leadingInset - itemSize, maxOffset);
+    leadingRange.valid = leadingRange.end > leadingRange.start;
+  }
+  trailingRange.start = 0.f;
+  if (trailingRange.valid && !isDirectChild) {
+    // In the grandchild case, the trailing range start is also constrained by the direct parent's
+    // start edge. scrollerSize - trailingInset - itemSize >= parentRelativePosition - offset
+    trailingRange.start =
+        MAX(parentRelativePosition + itemSize + trailingInset - scrollerSize, 0.f);
+    trailingRange.valid = trailingRange.start < trailingRange.end;
+  }
+
+  // 2. Handle conflict with leadingRange and trailingRange.
+  // When both sticky top and sticky bottom are set, there are three ranges:
+  // trailing sticky range: [trailingRange.start, trailingRange.end]
+  // normal scrolling range: [trailingRange.end, leadingRange.start]
+  // leading sticky range: [leadingRange.start, leadingRange.end]
+  if (leadingRange.valid && trailingRange.valid) {
+    // If there is no normal scrolling range, let the leading range win.
+    trailingRange.end = MIN(trailingRange.end, leadingRange.start);
+  }
+
+  // 3. calculate translate according to leadingRange and trailingRange.
+  CGFloat translation = 0.f;
+  if (trailingRange.valid && offset < trailingRange.end) {
+    // if offset < trailingRange.start, use trailingRange.start to calculate translate.
+    translation = MAX(offset, trailingRange.start) - trailingRange.end;
+  } else if (leadingRange.valid && offset > leadingRange.start) {
+    // If offset exceeds the leading range end, clamp the maximum translation with leadingRange.end.
+    translation = MIN(offset, leadingRange.end) - leadingRange.start;
+  }
+  CGPoint trans = CGPointZero;
+  if (isVertical) {
+    trans.y = translation;
+  } else {
+    trans.x = translation;
+  }
+  [self.backgroundManager setPostTranslate:trans];
 }
 
 - (void)checkStickyOnParentScroll:(CGFloat)offsetX withOffsetY:(CGFloat)offsetY {
@@ -487,12 +709,19 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
   // 1. Apply transform
   if ([self shouldReDoTransform]) {
     [self applyTransform];
+    // A transform update overwrites the layer transform, so reapply the
+    // existing offset effect to keep offset-rotate/position composed.
+    if (_offsetPath != nil) {
+      _offsetHasChanged = YES;
+    }
   }
   // 2. Apply offset
   if (_offsetHasChanged) {
     CGFloat rotateDeg = _offsetRotate;
     CGPoint resultPoint = CGPointZero;
-    if (_offsetPathRef == nil) {
+    UIBezierPath* offsetPath = [_offsetPath pathWithFrameSize:self.frameSize];
+    CGPathRef offsetPathRef = offsetPath.CGPath;
+    if (offsetPathRef == nil) {
       // When offset-path is not exist, offset will not apply.
       resultPoint = CGPointZero;
       rotateDeg = 0;
@@ -500,16 +729,19 @@ static const CGFloat OFFSET_ROTATE_AUTO = -1024.f;
       if (_isAutoOffsetRotate) {
         // offset-rotate is auto
         resultPoint = [LynxOffsetCalculator pointAtProgress:_offsetDistance
-                                                     onPath:_offsetPathRef
+                                                     onPath:offsetPathRef
                                                 withTangent:&rotateDeg];
+        rotateDeg += _offsetRotateAngle * M_PI / 180.0;
       } else {
         resultPoint = [LynxOffsetCalculator pointAtProgress:_offsetDistance
-                                                     onPath:_offsetPathRef
+                                                     onPath:offsetPathRef
                                                 withTangent:NULL];
+        rotateDeg = _offsetRotate * M_PI / 180.0;
       }
     }
-    [self applyOffset:resultPoint andRotate:rotateDeg];
-    _offsetHasChanged = NO;
+    if ([self applyOffset:resultPoint andRotate:rotateDeg]) {
+      _offsetHasChanged = NO;
+    }
   }
   // 3. Apply transition
   if (_transitionAnimationManager) {
@@ -1767,7 +1999,6 @@ LYNX_PROP_DEFINE("clip-radius", enableClipOnCornerRadius, NSString*) {
       i++;
       [drawable addObject:[[LynxBackgroundConicGradientDrawable alloc] initWithArray:value[i]]];
     } else if (type == LynxBackgroundImageNone) {
-      i++;
       [drawable addObject:[LynxBackgroundNoneDrawable new]];
     }
   }
@@ -4235,7 +4466,6 @@ LYNX_PROP_DEFINE("clip-path", setClipPath, NSArray*) {
 LYNX_PROP_DEFINE("offset-path", setOffsetPath, NSArray*) {
   if (requestReset || !value || [value count] < 1) {
     _offsetPath = nil;
-    _offsetPathRef = nil;
     _offsetHasChanged = YES;
     return;
   }
@@ -4250,23 +4480,18 @@ LYNX_PROP_DEFINE("offset-path", setOffsetPath, NSArray*) {
       if ([value count] != 2) {
         // Native parse error occurss. Reset the path.
         _offsetPath = nil;
-        _offsetPathRef = nil;
         break;
       }
       id data = [value objectAtIndex:1];
       if (![data isKindOfClass:[NSString class]]) {
         _offsetPath = nil;
-        _offsetPathRef = nil;
         break;
       }
       _offsetPath = LBSCreateBasicShapeFromPathData((NSString*)data);
-      const char* cData = [(NSString*)data UTF8String];
-      _offsetPathRef = LBSCreatePathFromData(cData);
       break;
     }
     default:
       _offsetPath = nil;
-      _offsetPathRef = nil;
   };
 }
 
@@ -4284,14 +4509,17 @@ LYNX_PROP_DEFINE("offset-distance", setOffsetDistance, CGFloat) {
 LYNX_PROP_DEFINE("offset-rotate", setOffsetRotate, CGFloat) {
   if (requestReset) {
     value = OFFSET_ROTATE_AUTO;
-    _isAutoOffsetRotate = YES;
-    _offsetHasChanged = YES;
+  }
+  _isAutoOffsetRotate = value == OFFSET_ROTATE_AUTO || LynxIsEncodedAutoOffsetRotate(value);
+  if (value == OFFSET_ROTATE_AUTO) {
+    _offsetRotateAngle = 0.f;
+  } else if (LynxIsEncodedAutoOffsetRotate(value)) {
+    _offsetRotateAngle = LynxDecodeAutoOffsetRotateAngle(value);
+  } else {
+    _offsetRotateAngle = 0.f;
   }
   if (_offsetRotate != value) {
     _offsetRotate = value;
-    if (_offsetRotate != OFFSET_ROTATE_AUTO) {
-      _isAutoOffsetRotate = NO;
-    }
     _offsetHasChanged = YES;
   }
 }
@@ -4430,39 +4658,53 @@ LYNX_PROP_DEFINE("hit-slop", setHitSlop, NSObject*) {
   }
 }
 
-- (void)applyOffset:(CGPoint)resultPoint andRotate:(CGFloat)rotateDeg toLayer:(CALayer*)layer {
+- (void)applyOffset:(CGPoint)resultPoint
+          transform:(CATransform3D)transform
+            toLayer:(CALayer*)layer {
   if (layer) {
-    [self prepareLastInfo];
-
-    // Remove the old offset effect.
     CGPoint newPosition = layer.position;
     newPosition.x -= _lastInfo.lastOffsetX;
     newPosition.y -= _lastInfo.lastOffsetY;
-    CATransform3D inverseTransform = CATransform3DInvert(_lastInfo.offsetEffectTransform);
-    layer.transform = CATransform3DConcat(layer.transform, inverseTransform);
-
-    // Record new offset effect to old offset effect.
-    _lastInfo.lastOffsetX = resultPoint.x;
-    _lastInfo.lastOffsetY = resultPoint.y;
-    _lastInfo.offsetEffectTransform = CATransform3DMakeRotation(rotateDeg, 0, 0, 1);
-    newPosition.x += _lastInfo.lastOffsetX;
-    newPosition.y += _lastInfo.lastOffsetY;
+    newPosition.x += resultPoint.x;
+    newPosition.y += resultPoint.y;
 
     // Apply the new offset effect.
     layer.position = newPosition;
-    layer.transform = CATransform3DConcat(layer.transform, _lastInfo.offsetEffectTransform);
+    layer.transform = transform;
   }
 }
 
-- (void)applyOffset:(CGPoint)resultPoint andRotate:(CGFloat)rotateDeg {
+- (BOOL)applyOffset:(CGPoint)resultPoint andRotate:(CGFloat)rotateDeg {
+  if (!isfinite(resultPoint.x) || !isfinite(resultPoint.y) || !isfinite(rotateDeg)) {
+    return NO;
+  }
+  [self prepareLastInfo];
+  CATransform3D baseTransform = self.view.layer.transform;
+  if (_lastInfo.hasOffsetEffect) {
+    CATransform3D expectedTransform =
+        CATransform3DConcat(_lastInfo.baseTransform, _lastInfo.offsetEffectTransform);
+    if (CATransform3DEqualToTransform(self.view.layer.transform, expectedTransform)) {
+      baseTransform = _lastInfo.baseTransform;
+    }
+  }
+  CATransform3D offsetEffectTransform = CATransform3DMakeRotation(rotateDeg, 0, 0, 1);
+  CATransform3D transform = CATransform3DConcat(baseTransform, offsetEffectTransform);
+
   // Move backgroundManager.borderLayer
-  [self applyOffset:resultPoint andRotate:rotateDeg toLayer:_backgroundManager.borderLayer];
+  [self applyOffset:resultPoint transform:transform toLayer:_backgroundManager.borderLayer];
   // Move backgroundManager.backgroundLayer.
-  [self applyOffset:resultPoint andRotate:rotateDeg toLayer:_backgroundManager.backgroundLayer];
+  [self applyOffset:resultPoint transform:transform toLayer:_backgroundManager.backgroundLayer];
   // Move backgroundManager.maskLayer.
-  [self applyOffset:resultPoint andRotate:rotateDeg toLayer:_backgroundManager.maskLayer];
+  [self applyOffset:resultPoint transform:transform toLayer:_backgroundManager.maskLayer];
   // Move view.layer.
-  [self applyOffset:resultPoint andRotate:rotateDeg toLayer:self.view.layer];
+  [self applyOffset:resultPoint transform:transform toLayer:self.view.layer];
+
+  _lastInfo.lastOffsetX = resultPoint.x;
+  _lastInfo.lastOffsetY = resultPoint.y;
+  _lastInfo.baseTransform = baseTransform;
+  _lastInfo.offsetEffectTransform = offsetEffectTransform;
+  _lastInfo.hasOffsetEffect = YES;
+  return YES;
 }
 
 #pragma mark - Detach/Attach Layer Management
@@ -4516,6 +4758,7 @@ LYNX_PROP_DEFINE("hit-slop", setHitSlop, NSObject*) {
     _lastTransformRotation = [[LynxAnimationTransformRotation alloc] init];
     _lastTransformWithoutRotate = CATransform3DIdentity;
     _lastTransformWithoutRotateXY = CATransform3DIdentity;
+    _baseTransform = CATransform3DIdentity;
     _offsetEffectTransform = CATransform3DIdentity;
   }
   return self;

@@ -17,6 +17,22 @@
 namespace lynx {
 namespace tasm {
 
+namespace {
+
+void RunOnUITaskSync(const fml::RefPtr<fml::TaskRunner>& runner,
+                     base::MoveOnlyClosure<void> task) {
+  if (!runner) {
+    return;
+  }
+  if (runner->RunsTasksOnCurrentThread()) {
+    task();
+    return;
+  }
+  runner->PostSyncTask(std::move(task));
+}
+
+}  // namespace
+
 void PaintingContextHarmonyRef::InsertPaintingNode(int parent, int child,
                                                    int index) {
   ui_owner_->InsertUI(parent, child, index);
@@ -87,6 +103,9 @@ void PaintingContextHarmonyRef::UpdateNodeReadyPatching(
     std::vector<int32_t> ready_ids, std::vector<int32_t> remove_ids) {
   for (int node_ready_id : ready_ids) {
     ui_owner_->OnNodeReady(node_ready_id);
+  }
+  for (int node_remove_id : remove_ids) {
+    ui_owner_->OnNodeRemoved(node_remove_id);
   }
 }
 
@@ -214,7 +233,11 @@ void PaintingContextHarmony::UpdateLayout(
   MAKE_UNIQUE_COPY(paddings, 4)
   MAKE_UNIQUE_COPY(margins, 4)
   MAKE_UNIQUE_COPY(borders, 4)
-  MAKE_UNIQUE_COPY(sticky, 4)
+  constexpr size_t kLegacyStickyInfoCount = 4;
+  constexpr size_t kNewStickyInfoCount = 10;
+  const size_t sticky_info_count =
+      config_.enable_new_sticky ? kNewStickyInfoCount : kLegacyStickyInfoCount;
+  MAKE_UNIQUE_COPY(sticky, sticky_info_count)
 #undef MAKE_UNIQUE_COPY
   Enqueue([platform_ref = platform_ref_, tag, x, y, width, height,
            paddings = std::move(paddings_copy),
@@ -301,6 +324,53 @@ std::vector<float> PaintingContextHarmony::GetRectToLynxView(int64_t id) {
   result[2] = result[2] - result[0];
   result[3] = result[3] - result[1];
   return std::vector<float>(result, result + 4);
+}
+
+void PaintingContextHarmony::getAbsolutePosition(int id, float* position) {
+  if (position == nullptr) {
+    return;
+  }
+  position[0] = 0.f;
+  position[1] = 0.f;
+  auto rect_to_lynx_view = GetRectToLynxView(id);
+  if (rect_to_lynx_view.size() >= 2) {
+    position[0] = rect_to_lynx_view[0];
+    position[1] = rect_to_lynx_view[1];
+  }
+}
+
+void PaintingContextHarmony::GetRectToScreen(int id, float* rect) {
+  if (rect == nullptr) {
+    return;
+  }
+  rect[0] = 0.f;
+  rect[1] = 0.f;
+  rect[2] = -1.f;
+  rect[3] = -1.f;
+  auto runner = GetUIOwner()->GetUITaskRunner();
+  if (!runner) {
+    return;
+  }
+  float result[4] = {0, 0, 0, 0};
+  bool found_ui = false;
+  auto task = base::MoveOnlyClosure<void>(
+      [platform_ref = platform_ref_, &result, &found_ui, id]() mutable {
+        auto harmony_ref =
+            std::static_pointer_cast<PaintingContextHarmonyRef>(platform_ref);
+        auto ui = harmony_ref->GetUIOwner()->FindUIBySign(id);
+        if (ui) {
+          found_ui = true;
+          ui->GetBoundingClientRect(result, true);
+        }
+      });
+  RunOnUITaskSync(runner, std::move(task));
+  if (!found_ui) {
+    return;
+  }
+  rect[0] = result[0];
+  rect[1] = result[1];
+  rect[2] = result[2] - result[0];
+  rect[3] = result[3] - result[1];
 }
 
 std::vector<float> PaintingContextHarmony::ScrollBy(int64_t id, float width,

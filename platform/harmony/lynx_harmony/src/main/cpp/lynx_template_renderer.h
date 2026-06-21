@@ -7,7 +7,9 @@
 
 #include <node_api.h>
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -45,6 +47,9 @@ namespace tasm {
 class LynxTemplateBundle;
 class TemplateData;
 class PageConfig;
+namespace harmony {
+class LynxContext;
+}  // namespace harmony
 }  // namespace tasm
 
 namespace harmony {
@@ -83,6 +88,7 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
   int32_t GetInstanceId() const;
   bool ShouldSendEventToMainThread() const;
   void UpdateFontScale(float font_scale);
+  void UpdateColorScheme(int scheme);
   void SetEnableBytecode(bool enable, std::string source_url);
   lepus::Value GetPageDataByKey(std::vector<std::string> keys);
 
@@ -159,6 +165,10 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
   static napi_value GetBaseTraceBackend(napi_env env, napi_callback_info info);
   static napi_value InitGlobalEnv(napi_env env, napi_callback_info info);
   static napi_value RegisterImageService(napi_env env, napi_callback_info info);
+  static napi_value SetEmojiResourceFetcher(napi_env env,
+                                            napi_callback_info info);
+  static napi_value PreloadCommonEmojiResources(napi_env env,
+                                                napi_callback_info info);
   static napi_value NativeAttach(napi_env env, napi_callback_info info);
   static napi_value NativeDetach(napi_env env, napi_callback_info info);
   static napi_value NativeReset(napi_env env, napi_callback_info info);
@@ -198,6 +208,7 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
   static napi_value ShouldSendEventToMainThread(napi_env env,
                                                 napi_callback_info info);
   static napi_value UpdateFontScale(napi_env env, napi_callback_info info);
+  static napi_value UpdateColorScheme(napi_env env, napi_callback_info info);
   static napi_value NativeSetEnableBytecode(napi_env env,
                                             napi_callback_info info);
   static napi_value GetPageDataByKey(napi_env env, napi_callback_info info);
@@ -213,6 +224,9 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
                                             napi_callback_info info);
   static napi_value UnsubscribeSessionStorage(napi_env env,
                                               napi_callback_info info);
+  static napi_value GetLynxElementRoot(napi_env env, napi_callback_info info);
+  static napi_value LynxElementToJSONString(napi_env env,
+                                            napi_callback_info info);
 
   static napi_value GetAllJsSource(napi_env env, napi_callback_info info);
   static napi_value InvokeLepusCallback(napi_env env, napi_callback_info info);
@@ -220,10 +234,12 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
   struct WeakFlag : public std::enable_shared_from_this<WeakFlag> {
     explicit WeakFlag(LynxTemplateRenderer* template_renderer)
         : renderer(template_renderer) {}
-    LynxTemplateRenderer* renderer;
+    std::atomic<LynxTemplateRenderer*> renderer;
   };
 
  private:
+  void SyncInspectorOwnerToLynxContext();
+
   void MergeGlobalProps(lepus::Value global_props);
   void SetupExtensionDelegate(pub::LynxExtensionDelegate* delegate);
   std::vector<uint8_t> LoadJSSource(const std::string& url);
@@ -241,10 +257,12 @@ class LynxTemplateRenderer : public devtool::LynxDevToolProxy {
   std::shared_ptr<shell::LynxLayoutProxy> layout_proxy_;
   std::shared_ptr<shell::PerfControllerProxy> perf_controller_proxy_;
   std::shared_ptr<shell::LynxShell> shell_;
-  tasm::UIDelegate* ui_delegate_;
+  tasm::UIDelegate* ui_delegate_{nullptr};
   std::shared_ptr<LynxResourceLoaderHarmony> resource_loader_;
+  std::weak_ptr<tasm::harmony::LynxContext> lynx_context_;
   std::shared_ptr<WeakFlag> weak_flag_;
-  devtool::LynxInspectorOwner* inspector_owner_ = nullptr;
+  std::mutex inspector_owner_mutex_;
+  std::atomic<devtool::LynxInspectorOwner*> inspector_owner_{nullptr};
   std::unordered_map<int32_t, napi_ref> session_storage_callback_refs_;
 };
 

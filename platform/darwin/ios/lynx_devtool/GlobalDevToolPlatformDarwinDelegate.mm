@@ -13,17 +13,91 @@
 #import <LynxDevtool/LynxFrameViewTrace.h>
 #import <LynxDevtool/LynxInstanceTrace.h>
 #import <LynxDevtool/LynxMemoryController.h>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 #include "devtool/lynx_devtool/agent/global_devtool_platform_facade.h"
 
 #pragma mark - GlobalDevToolPlatformDarwin
 namespace lynx {
 namespace devtool {
+namespace {
+
+constexpr char kEmptyMemoryUsageResultJson[] = "{}";
+constexpr char kDarwinMemoryUsageInvalidResult[] =
+    "Memory.getAllMemoryUsage returned empty or invalid result JSON on Darwin";
+
+bool IsJsonWhitespace(unichar value) {
+  return value == ' ' || value == '\n' || value == '\r' || value == '\t';
+}
+
+bool LooksLikeJsonObjectString(NSString* _Nullable value) {
+  if (!value) {
+    return false;
+  }
+  NSUInteger start = 0;
+  NSUInteger end = [value length];
+  while (start < end && IsJsonWhitespace([value characterAtIndex:start])) {
+    ++start;
+  }
+  while (end > start && IsJsonWhitespace([value characterAtIndex:end - 1])) {
+    --end;
+  }
+  if (start == end) {
+    return false;
+  }
+  return [value characterAtIndex:start] == '{' && [value characterAtIndex:end - 1] == '}';
+}
+
+struct MemoryUsageCallbackState {
+  explicit MemoryUsageCallbackState(GlobalDevToolPlatformFacade::MemoryUsageCallback&& callback)
+      : callback(std::move(callback)) {}
+
+  std::mutex mutex;
+  GlobalDevToolPlatformFacade::MemoryUsageCallback callback;
+};
+
+}  // namespace
+
 class GlobalDevToolPlatformDarwin : public GlobalDevToolPlatformFacade {
  public:
   void StartMemoryTracing() override { [GlobalDevToolPlatformDarwinDelegate startMemoryTracing]; }
 
   void StopMemoryTracing() override { [GlobalDevToolPlatformDarwinDelegate stopMemoryTracing]; }
+
+  void GetAllMemoryUsage(int64_t timeout_ms, MemoryUsageCallback callback) override {
+    if (!callback) {
+      return;
+    }
+    auto callbackState = std::make_shared<MemoryUsageCallbackState>(std::move(callback));
+    [GlobalDevToolPlatformDarwinDelegate
+        queryAllMemoryUsageWithTimeoutMs:timeout_ms
+                                callback:^(NSString* _Nullable resultJson,
+                                           NSString* _Nullable errorMessage) {
+                                  MemoryUsageCallback callbackToRun;
+                                  {
+                                    std::lock_guard<std::mutex> lock(callbackState->mutex);
+                                    if (!callbackState->callback) {
+                                      return;
+                                    }
+                                    callbackToRun = std::move(callbackState->callback);
+                                  }
+                                  const char* resultCStr =
+                                      resultJson ? [resultJson UTF8String] : nullptr;
+                                  const char* errorCStr =
+                                      errorMessage ? [errorMessage UTF8String] : nullptr;
+                                  const bool hasValidResult =
+                                      resultCStr && LooksLikeJsonObjectString(resultJson);
+                                  std::string result =
+                                      hasValidResult ? resultCStr : kEmptyMemoryUsageResultJson;
+                                  std::string error = errorCStr ? errorCStr : "";
+                                  if (!hasValidResult && error.empty()) {
+                                    error = kDarwinMemoryUsageInvalidResult;
+                                  }
+                                  std::move(callbackToRun)(result, error);
+                                }];
+  }
 
   lynx::trace::TraceController* GetTraceController() override {
     intptr_t res = [GlobalDevToolPlatformDarwinDelegate getTraceController];
@@ -86,6 +160,12 @@ GlobalDevToolPlatformFacade& GlobalDevToolPlatformFacade::GetInstance() {
 
 + (void)stopMemoryTracing {
   [[LynxMemoryController shareInstance] stopMemoryTracing];
+}
+
++ (void)queryAllMemoryUsageWithTimeoutMs:(int64_t)timeoutMs
+                                callback:(GlobalDevToolMemoryUsageCallback)callback {
+  [[LynxMemoryController shareInstance] queryAllMemoryUsageWithTimeoutMs:timeoutMs
+                                                                callback:callback];
 }
 
 + (intptr_t)getTraceController {

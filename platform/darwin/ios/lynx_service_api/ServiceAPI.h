@@ -66,10 +66,6 @@ typedef struct {
   @end
 #endif
 
-#ifndef LynxAutolinkService
-#define LynxAutolinkService(clsName, protocolName) LynxServiceRegister(clsName, protocolName)
-#endif
-
 /**
  * Bind protocol and class, e.g., LYNX_SERVICE_BIND (LynxMonitorService,
  * LynxMonitorProtocol)
@@ -77,10 +73,22 @@ typedef struct {
 #define LynxServiceBind(cls, pro) ([LynxServices bindClass:cls toProtocol:@protocol(pro)])
 
 /**
- * Get the default object that implements the specified protocol, e.g.,
- * LYNX_SERVICE(LynxMonitorProtocol) -> id<LynxMonitorProtocol>
+ * Get the default object that implements the specified protocol.
  */
-#define LynxService(pro) ((id<pro>)([LynxServices getInstanceWithProtocol:@protocol(pro)]))
+#define LYNX_SERVICE_GET(pro) ((id<pro>)([LynxServices getInstanceWithProtocol:@protocol(pro)]))
+
+#define LYNX_SERVICE_SELECT(_1, _2, NAME, ...) NAME
+
+/**
+ * LynxService supports service lookup and the two-argument registration marker.
+ *
+ * LynxService(LynxMonitorProtocol) -> id<LynxMonitorProtocol>
+ * @LynxService(LynxMonitorService, LynxServiceMonitorProtocol)
+ */
+#ifndef LynxService
+#define LynxService(...) \
+  LYNX_SERVICE_SELECT(__VA_ARGS__, LynxServiceRegister, LYNX_SERVICE_GET)(__VA_ARGS__)
+#endif
 
 @interface LynxServices : NSObject
 

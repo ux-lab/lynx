@@ -107,7 +107,7 @@ RuntimeLifecycleListenerDelegateHarmony::
       listener_ref_(listener_ref) {}
 
 void RuntimeLifecycleListenerDelegateHarmony::OnRuntimeAttach(void* env_ptr) {
-  base::NapiHandleScope scope(static_cast<napi_env>(env_ptr));
+  base::NapiHandleScope scope(env_);
   napi_value param[1];
   param[0] = base::NapiUtil::CreatePtrArray(
       env_, reinterpret_cast<uintptr_t>(static_cast<napi_env>(env_ptr)));
@@ -274,7 +274,7 @@ napi_value LynxRuntimeWrapper::NativeCreate(napi_env env,
       base::NapiUtil::ConvertToString(env, args[7]);
 
   // module
-  static constexpr uint32_t kArgsSize = 4;
+  static constexpr uint32_t kArgsSize = 5;
   napi_value module_args[kArgsSize];
   base::NapiUtil::ConvertToArray(env, args[8], module_args, kArgsSize);
   napi_value sendable_module_args[kArgsSize];

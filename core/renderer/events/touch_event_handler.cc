@@ -674,7 +674,9 @@ void TouchEventHandler::HandleTriggerComponentEvent(
         static_cast<event::Event::Capture>(capture_phase),
         static_cast<event::Event::Bubbles>(bubbles),
         event::Event::Cancelable::kYes,
-        static_cast<event::Event::ComposedMode>(composed));
+        static_cast<event::Event::ComposedMode>(composed),
+        event::Event::PhaseType::kNone,
+        base::Version(version_) < base::Version(LYNX_VERSION_1_6));
     event->set_from_frontend(true);
     event::EventDispatcher::DispatchEvent(*component_element, std::move(event));
     return;
@@ -1047,6 +1049,7 @@ lepus::Value TouchEventHandler::GetTargetInfo(int32_t impl_id,
     BASE_STATIC_STRING_DECL(kId, "id");
     BASE_STATIC_STRING_DECL(kDataset, "dataset");
     BASE_STATIC_STRING_DECL(kUid, "uid");
+    BASE_STATIC_STRING_DECL(kNodeIndex, "nodeIndex");
 
     dict.get()->SetValue(kId, holder->idSelector());
     auto data_set = lepus::Dictionary::Create();
@@ -1055,6 +1058,10 @@ lepus::Value TouchEventHandler::GetTargetInfo(int32_t impl_id,
     }
     dict.get()->SetValue(kDataset, std::move(data_set));
     dict.get()->SetValue(kUid, impl_id);
+    ElementManager *manager = element ? element->element_manager() : nullptr;
+    if (manager && manager->GetEnableEventTargetInfoNodeIndex()) {
+      dict.get()->SetValue(kNodeIndex, element->NodeIndex());
+    }
   }
 
   // element ref needed in fiber element worklet

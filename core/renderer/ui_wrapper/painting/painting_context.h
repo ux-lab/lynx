@@ -54,6 +54,9 @@ class PaintingContext {
   inline void GetAbsolutePosition(int id, float* position) {
     platform_impl_->getAbsolutePosition(id, position);
   }
+  inline void GetRectToScreen(int id, float* rect) {
+    platform_impl_->GetRectToScreen(id, rect);
+  }
 
   inline void CreatePaintingNode(int id, const std::string& tag,
                                  const fml::RefPtr<PropBundle>& painting_data,
@@ -93,6 +96,11 @@ class PaintingContext {
     platform_impl_->UpdateLayout(tag, x, y, width, height, paddings, margins,
                                  borders, bounds, sticky, max_height,
                                  node_index);
+  }
+
+  inline void RecordInitialLynxUITreeForReplay(
+      std::vector<InitialLynxUITreeNodeForReplay> nodes) {
+    platform_impl_->RecordInitialLynxUITreeForReplay(std::move(nodes));
   }
 
   void SetFrameAppBundle(int tag,

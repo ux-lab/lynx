@@ -210,6 +210,8 @@ Element::Element(const Element& element, bool clone_resolved_props)
       record_parent_font_size_(element.record_parent_font_size_),
       global_bind_target_set_(element.global_bind_target_set_),
       animation_previous_styles_(element.animation_previous_styles_),
+      committed_underlying_layout_only_styles_for_new_pipeline_(
+          element.committed_underlying_layout_only_styles_for_new_pipeline_),
       template_attributes_(element.template_attributes_) {
   if (element.base_css_style() != nullptr) {
     base_css_style_ = std::make_unique<starlight::ComputedCSSStyle>(
@@ -217,6 +219,7 @@ Element::Element(const Element& element, bool clone_resolved_props)
   }
   platform_css_style_ = std::make_unique<starlight::ComputedCSSStyle>(
       *(element.computed_css_style()));
+  element_entry_name_ = element.element_entry_name_;
 }
 
 void Element::AttachToElementManager(
@@ -319,6 +322,10 @@ std::vector<float> Element::GetRectToLynxView() {
   return catalyzer_->GetRectToLynxView(this);
 }
 
+std::vector<float> Element::GetRectToScreen() {
+  return catalyzer_->GetRectToScreen(this);
+}
+
 void Element::set_will_destroy(bool destroy) {
   will_destroy_ = destroy;
   if (destroy && data_model_ && element_manager_ &&
@@ -399,9 +406,7 @@ void Element::UpdateLayout(float left, float top, float width, float height,
   paddings_ = paddings;
   margins_ = margins;
   borders_ = borders;
-  if (sticky_positions != nullptr) {
-    *sticky_positions_ = *sticky_positions;
-  }
+  UpdateStickyPosition(sticky_positions);
   MarkSubtreeNeedUpdate();
   NotifyElementSizeUpdated();
 }
@@ -409,6 +414,17 @@ void Element::UpdateLayout(float left, float top, float width, float height,
 void Element::UpdateLayout(float left, float top) {
   top_ = top;
   left_ = left;
+}
+
+void Element::UpdateStickyPosition(
+    const std::array<float, 4>* sticky_positions) {
+  if (sticky_positions != nullptr) {
+    for (size_t i = 0; i < sticky_positions->size(); ++i) {
+      (*sticky_positions_)[i] = (*sticky_positions)[i];
+    }
+  } else if (element_manager()->GetEnableNewSticky()) {
+    sticky_positions_.reset();
+  }
 }
 
 bool Element::ConsumeTransitionStylesInAdvance(const StyleMap& styles,
@@ -444,7 +460,6 @@ void Element::SetStyleInternal(CSSPropertyID css_id,
         css_info->set_string_value(CSSProperty::GetPropertyNameCStr(css_id));
       });
   CheckDynamicUnit(css_id, value, false);
-
   // font-size has be handled, just ignore it.
   if (css_id == kPropertyIDFontSize) {
     return;
@@ -683,7 +698,7 @@ void Element::ResetStyle(const base::Vector<CSSPropertyID>& css_names) {
     }
     // #3. Review each property to determine whether the reset should be
     // intercepted.
-    if (css_transition_manager_ &&
+    if (ShouldUseLegacyTransitionInterception() && css_transition_manager_ &&
         css_transition_manager_->ConsumeCSSProperty(css_id, CSSValue())) {
       continue;
     }
@@ -1421,6 +1436,78 @@ void Element::PreparePropBundleIfNeed() {
   }
 }
 
+fml::RefPtr<PropBundle> Element::GetPropBundleForRecording() {
+  auto bundle = element_manager()->GetPropBundleCreator()->CreatePropBundle(
+      element_manager_->GetEnableUseMapBuffer(), EnableFragmentLayerRender());
+  PushCurrentPropsToBundleForRecording(bundle.get());
+  return bundle;
+}
+
+void Element::PushCurrentPropsToBundleForRecording(PropBundle* bundle) {
+  if (bundle == nullptr) {
+    return;
+  }
+
+  if (data_model_) {
+    for (const auto& [key, value] : data_model_->attributes()) {
+      bundle->SetProps(key.c_str(), pub::ValueImplLepus(value));
+    }
+    for (const auto& [key, value] : updated_attr_map_) {
+      bundle->SetProps(key.c_str(), pub::ValueImplLepus(value));
+    }
+
+    const auto& dataset = data_model_->dataset();
+    if (!dataset.empty()) {
+      lepus::Value dataset_val(lepus::Dictionary::Create());
+      for (const auto& [key, value] : dataset) {
+        dataset_val.SetProperty(key, value);
+      }
+      bundle->SetProps("dataset", pub::ValueImplLepus(dataset_val));
+    }
+
+    auto push_events = [bundle](const EventMap& events) {
+      for (const auto& event : events) {
+        if (event.second) {
+          bundle->SetEventHandler(event.second->ToPubLepusValue());
+        }
+      }
+    };
+    push_events(data_model_->static_events());
+    push_events(data_model_->lepus_events());
+    push_events(data_model_->global_bind_events());
+
+    for (const auto& gesture : data_model_->gesture_detectors()) {
+      if (gesture.second) {
+        bundle->SetGestureDetector(*gesture.second);
+      }
+    }
+  }
+
+  if (pseudo_elements_.has_value()) {
+    for (const auto& pseudo_element : *pseudo_elements_) {
+      pseudo_element.second->PushCurrentPropertiesToBundle(bundle);
+    }
+  }
+
+  if (EnableFragmentLayerRender() && !IsShadowNodeCustom()) {
+    return;
+  }
+
+  auto* style = computed_css_style();
+  if (style == nullptr) {
+    return;
+  }
+  for (const auto& style_prop : style->GetResolvedValues()) {
+    const auto id = style_prop.first;
+    if (CSSProperty::IsTransitionProps(id) ||
+        CSSProperty::IsKeyframeProps(id) || LayoutProperty::IsLayoutOnly(id) ||
+        !starlight::ComputedCSSStyle::IsPlatformProperty(id)) {
+      continue;
+    }
+    PropBundleStyleWriter::PushStyleToBundle(bundle, id, style);
+  }
+}
+
 void Element::ResetPropBundle() {
   if (prop_bundle_) {
     // TODO(songshourui.null): Consider removing dependency on pre_prop_bundle_
@@ -1491,10 +1578,13 @@ bool Element::ShouldAvoidFlattenForView() {
 }
 
 bool Element::TendToFlatten() {
-  return config_flatten_ && !has_event_listener_ && !has_non_flatten_attrs_ &&
-         !DisableFlattenWithOpacity() &&
+  return config_flatten_ &&
+         (!has_event_listener_ || EnableFragmentLayerRender()) &&
+         !has_non_flatten_attrs_ && !DisableFlattenWithOpacity() &&
          !(has_z_props() && !is_image() && !is_text()) && !is_inline_element_ &&
-         !ShouldAvoidFlattenForView()
+         !ShouldAvoidFlattenForView() &&
+         // Note: sticky item should not be flatten on Android platform.
+         (!element_manager_->GetEnableNewSticky() || !is_sticky_)
 #if OS_IOS
          // On iOS, the current CUI platform-rendering flatten path does not
          // preserve clip/overflow scope the same way as Android's platform
@@ -1785,9 +1875,14 @@ void Element::CheckFixedSticky(CSSPropertyID id, const tasm::CSSValue& value) {
     is_fixed_ = type == starlight::PositionType::kFixed;
     is_sticky_ = type == starlight::PositionType::kSticky;
     fixed_changed_ |= (is_fixed_before != is_fixed_);
-    if (this->IsNewFixed()) {
-      // fixed node should not be layout only. We need it to locate the entire
-      // subtree.
+    bool is_new_fixed = IsNewFixed();
+    // Legacy sticky only handled direct scroll-view children, which are native
+    // views. New sticky can target any descendant, so sticky nodes must stay
+    // non-layout-only to keep their subtree positioned by platform.
+    bool is_new_sticky = is_sticky_ && element_manager_->GetEnableNewSticky();
+    if (is_new_fixed || is_new_sticky) {
+      // Fixed or sticky nodes should not be layout-only. We need them to locate
+      // the entire subtree.
       has_layout_only_props_ = false;
     }
   }
@@ -1980,6 +2075,18 @@ bool Element::TickAllAnimation(fml::TimePoint& frame_time,
                                std::shared_ptr<PipelineOptions>& options) {
   TRACE_EVENT(LYNX_TRACE_CATEGORY, ELEMENT_TICK_ALL_ANIMATION);
 
+  if (element_manager_->EnableNewStylingPipeline() && enable_new_animator_) {
+    RequireFlush();
+    SetAnimationSampleTimeForNewPipeline(frame_time);
+    MarkStyleDirty();
+    options->resolve_requested = true;
+    options->target_node = this->impl_id();
+    return true;
+  }
+  if (element_manager_->EnableNewStylingPipeline() && !enable_new_animator_) {
+    return false;
+  }
+
   if (css_transition_manager_ != nullptr) {
     css_transition_manager_->TickAllAnimation(frame_time);
   }
@@ -2000,6 +2107,40 @@ bool Element::TickAllAnimation(fml::TimePoint& frame_time,
     }
   }
   return need_layout;
+}
+
+void Element::SetAnimationSampleTimeForNewPipeline(
+    const fml::TimePoint& sample_time) {
+  animation_sample_time_for_new_pipeline_ = sample_time;
+}
+
+base::flex_optional<fml::TimePoint>
+Element::TakeAnimationSampleTimeForNewPipeline() {
+  auto sample_time = std::move(animation_sample_time_for_new_pipeline_);
+  animation_sample_time_for_new_pipeline_ = std::nullopt;
+  return sample_time;
+}
+
+void Element::DispatchAnimationEventsForNewPipeline(
+    const animation::AnimationEventRecordsForNewPipeline& event_records) {
+  for (const auto& event_record : event_records) {
+    auto animation = event_record.animation;
+    if (animation == nullptr) {
+      continue;
+    }
+    if (event_record.send_cancel_event) {
+      animation->SendCancelEvent();
+    }
+    if (event_record.send_start_event) {
+      animation->SendStartEvent();
+    }
+    for (int i = 0; i < event_record.iteration_events_due; ++i) {
+      animation->SendIterationEvent();
+    }
+    if (event_record.send_end_event) {
+      animation->SendEndEvent();
+    }
+  }
 }
 
 void Element::UpdateFinalStyleMap(const StyleMap& styles) {
@@ -2105,7 +2246,12 @@ void Element::DispatchBundleToPaintingNode(fml::RefPtr<PropBundle> bundle) {
 }
 
 bool Element::ShouldConsumeTransitionStylesInAdvance() {
-  return (enable_new_animator() && HasPaintingNode());
+  return (ShouldUseLegacyTransitionInterception() && HasPaintingNode());
+}
+
+bool Element::ShouldUseLegacyTransitionInterception() const {
+  return enable_new_animator_ && element_manager_ != nullptr &&
+         !element_manager_->EnableNewStylingPipeline();
 }
 
 // Since the previous element styles cannot be accessed in element, we
@@ -2114,7 +2260,7 @@ bool Element::ShouldConsumeTransitionStylesInAdvance() {
 // properties can be accessed through ComputedCSSStyle.
 void Element::RecordElementPreviousStyle(CSSPropertyID css_id,
                                          const tasm::CSSValue& value) {
-  if (!enable_new_animator()) {
+  if (!ShouldUseLegacyTransitionInterception()) {
     return;
   }
   if (animation::IsAnimatableProperty(css_id)) {
@@ -2123,7 +2269,7 @@ void Element::RecordElementPreviousStyle(CSSPropertyID css_id,
 }
 
 void Element::ResetElementPreviousStyle(CSSPropertyID css_id) {
-  if (!enable_new_animator()) {
+  if (!ShouldUseLegacyTransitionInterception()) {
     return;
   }
   if (animation::IsAnimatableProperty(css_id)) {
@@ -2133,6 +2279,9 @@ void Element::ResetElementPreviousStyle(CSSPropertyID css_id) {
 
 std::optional<CSSValue> Element::GetElementPreviousStyle(
     tasm::CSSPropertyID css_id) {
+  if (!ShouldUseLegacyTransitionInterception()) {
+    return std::optional<CSSValue>();
+  }
   auto iter = animation_previous_styles_.find(css_id);
   if (iter == animation_previous_styles_.end()) {
     return std::optional<CSSValue>();
@@ -2417,6 +2566,7 @@ lepus::Value Element::GetEventTargetInfo(bool is_core_event) {
     BASE_STATIC_STRING_DECL(kId, "id");
     BASE_STATIC_STRING_DECL(kDataset, "dataset");
     BASE_STATIC_STRING_DECL(kUid, "uid");
+    BASE_STATIC_STRING_DECL(kNodeIndex, "nodeIndex");
 
     dict.get()->SetValue(kId, data_model_->idSelector());
     auto dataset = lepus::Dictionary::Create();
@@ -2425,6 +2575,10 @@ lepus::Value Element::GetEventTargetInfo(bool is_core_event) {
     }
     dict.get()->SetValue(kDataset, std::move(dataset));
     dict.get()->SetValue(kUid, id_);
+    if (element_manager_ &&
+        element_manager_->GetEnableEventTargetInfoNodeIndex()) {
+      dict.get()->SetValue(kNodeIndex, node_index_);
+    }
   }
 
   // element ref needed in fiber element worklet

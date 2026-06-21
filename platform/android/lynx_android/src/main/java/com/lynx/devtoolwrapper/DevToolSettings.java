@@ -11,9 +11,12 @@ import androidx.annotation.RestrictTo;
 import com.lynx.tasm.LynxEnv;
 import com.lynx.tasm.LynxSubErrorCode;
 import com.lynx.tasm.base.LLog;
+import com.lynx.tasm.eventreport.LynxEventReporter;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -34,6 +37,8 @@ import java.util.Set;
  */
 public class DevToolSettings {
   private static final String TAG = "DevToolSettings";
+  private static final int MAX_REPORTED_CALLER_FRAMES = 3;
+  private static final String VM_STACK_CLASS_NAME = "dalvik.system.VMStack";
   private static volatile DevToolSettings sInstance;
   private SharedPreferences mSharedPreferences;
 
@@ -75,6 +80,8 @@ public class DevToolSettings {
   public static final int V8_ON = 1;
   public static final int V8_ALIGN_WITH_PROD = 2;
 
+  private final BootstrapSettings mBootstrapSettings = new BootstrapSettings();
+
   // Member variables to store non-persisted settings
   private volatile boolean mHighlightTouchEnabled = false;
   private volatile boolean mPreviewScreenshotEnabled = true;
@@ -92,6 +99,115 @@ public class DevToolSettings {
   }
 
   private DevToolSettings() {}
+
+  /**
+   * Process-local integration settings that can be configured before {@link LynxEnv#init}.
+   */
+  public BootstrapSettings bootstrap() {
+    return mBootstrapSettings;
+  }
+
+  /**
+   * Host integration settings used before DevTool is initialized.
+   * <p>
+   * These values are process-local, non-persisted, not synced to native, and default to false
+   * unless set explicitly by the host or filled by development defaults.
+   */
+  public static final class BootstrapSettings {
+    private volatile Boolean mLynxDebugEnabled = null;
+    private volatile Boolean mLogBoxEnabled = null;
+    private volatile Boolean mLoadQJSBridge = null;
+    private volatile Boolean mLoadV8Bridge = null;
+
+    private BootstrapSettings() {}
+
+    /**
+     * Bootstrap intent used before the DevTool component is attached.
+     * <p>
+     * This setting is intentionally process-local. It selects the initial desired lifecycle state
+     * and must not overwrite persisted user preferences.
+     */
+    public boolean isLynxDebugEnabled() {
+      return isEnabled(mLynxDebugEnabled);
+    }
+
+    public void setLynxDebugEnabled(boolean enabled) {
+      mLynxDebugEnabled = enabled;
+    }
+
+    /**
+     * Host integration gate for LogBox.
+     * <p>
+     * The effective LogBox state is this bootstrap value AND the persisted LogBox setting AND
+     * DevTool lifecycle state.
+     */
+    public boolean isLogBoxEnabled() {
+      return isEnabled(mLogBoxEnabled);
+    }
+
+    public void setLogBoxEnabled(boolean enabled) {
+      mLogBoxEnabled = enabled;
+    }
+
+    /**
+     * Whether DevTool should load the optional QuickJS bridge native library during
+     * initialization.
+     */
+    public boolean shouldLoadQJSBridge() {
+      return isEnabled(mLoadQJSBridge);
+    }
+
+    public void setLoadQJSBridge(boolean enabled) {
+      mLoadQJSBridge = enabled;
+    }
+
+    /**
+     * Whether DevTool should load the optional V8 bridge native libraries during initialization.
+     */
+    public boolean shouldLoadV8Bridge() {
+      return isEnabled(mLoadV8Bridge);
+    }
+
+    public void setLoadV8Bridge(boolean enabled) {
+      mLoadV8Bridge = enabled;
+    }
+
+    /**
+     * Applies development-friendly debug defaults for values that the host has not configured
+     * explicitly.
+     * <p>
+     * New integrations should set the individual bootstrap settings directly before
+     * {@link LynxEnv#init}.
+     */
+    public void applyDevelopmentDefaultsIfUnset() {
+      // This method is not thread-safe.
+      // This is expected to run during single-threaded bootstrap. If callers need concurrent
+      // bootstrap configuration later, make this set-if-unset block atomic.
+      if (mLynxDebugEnabled == null) {
+        mLynxDebugEnabled = true;
+      }
+      if (mLogBoxEnabled == null) {
+        mLogBoxEnabled = true;
+      }
+      if (mLoadQJSBridge == null) {
+        mLoadQJSBridge = true;
+      }
+      if (mLoadV8Bridge == null) {
+        mLoadV8Bridge = true;
+      }
+    }
+
+    private static boolean isEnabled(Boolean enabled) {
+      return enabled != null && enabled;
+    }
+
+    private void resetForTesting() {
+      mLynxDebugEnabled = null;
+      mLogBoxEnabled = null;
+      mLoadQJSBridge = null;
+      mLoadV8Bridge = null;
+    }
+  }
 
   public void init(Context context) {
     // In order to receive calls to pre-set values before DevTool initializes, e.g.
@@ -196,6 +312,13 @@ public class DevToolSettings {
     return true;
   }
 
+  void resetNonPersistedSettingsForTesting() {
+    mBootstrapSettings.resetForTesting();
+    mHighlightTouchEnabled = false;
+    mPreviewScreenshotEnabled = true;
+    mPerfMetricsEnabled = false;
+  }
+
   // TODO(mitchilling): we need explanation of the purpose and usage of each setting in javadoc
   /**
    * The return value indicates the setting value ONLY.
@@ -213,6 +336,7 @@ public class DevToolSettings {
   public void setDevToolEnabled(boolean enabled) {
     setPersistedBoolean(SP_KEY_ENABLE_DEVTOOL, enabled);
     syncToNativeBoolean(SP_KEY_ENABLE_DEVTOOL, enabled);
+    reportEnableEventIfNeeded("setDevToolEnabled", "lynxsdk_enable_devtool_event", enabled);
   }
 
   /**
@@ -231,6 +355,7 @@ public class DevToolSettings {
   public void setLogBoxEnabled(boolean enabled) {
     setPersistedBoolean(SP_KEY_ENABLE_LOGBOX, enabled);
     syncToNativeBoolean(SP_KEY_ENABLE_LOGBOX, enabled);
+    reportEnableEventIfNeeded("setLogBoxEnabled", "lynxsdk_enable_logbox_event", enabled);
   }
 
   /**
@@ -303,10 +428,10 @@ public class DevToolSettings {
   /**
    * <b>Persistence:</b> true
    * <br><b>Sync to Native:</b> false
-   * <br><b>Default:</b> true
+   * <br><b>Default:</b> false
    */
   public boolean isLongPressMenuEnabled() {
-    return getPersistedBoolean(SP_KEY_ENABLE_LONG_PRESS_MENU, true);
+    return getPersistedBoolean(SP_KEY_ENABLE_LONG_PRESS_MENU, false);
   }
 
   public void setLongPressMenuEnabled(boolean enabled) {
@@ -364,6 +489,7 @@ public class DevToolSettings {
 
   public void setDebugModeEnabled(boolean enabled) {
     setPersistedBoolean(SP_KEY_ENABLE_DEBUG_MODE, enabled);
+    reportEnableEventIfNeeded("setDebugModeEnabled", "lynxsdk_enable_debug_mode_event", enabled);
   }
 
   /**
@@ -485,5 +611,125 @@ public class DevToolSettings {
     }
     setPersistedStringSet(SP_KEY_ACTIVATED_CDP_DOMAINS, enabledDomains);
     syncToNativeEnabledCDPDomains(enabledDomains);
+  }
+
+  // This event intentionally reports only explicit "enable" calls. It does not
+  // report disable or generic state transitions. The backtrace depends on the
+  // current Thread.currentThread().getStackTrace() frame layout, so keep this
+  // helper aligned with any future wrapper/refactor around the setting setters.
+  private void reportEnableEventIfNeeded(
+      @NonNull String setterName, @NonNull String eventName, boolean currentValue) {
+    if (!currentValue) {
+      return;
+    }
+
+    String backtrace = getEnableCaller(setterName);
+    LynxEventReporter.onEvent(eventName, -1, () -> {
+      Map<String, Object> props = new HashMap<>();
+      props.put("backtrace", backtrace);
+      return props;
+    });
+  }
+
+  private String getEnableCaller(@NonNull String setterName) {
+    String settingsClassName = DevToolSettings.class.getName();
+    String lynxEnvClassName = LynxEnv.class.getName();
+    return getCallerBacktrace(settingsClassName, setterName, new String[] {lynxEnvClassName},
+        new String[] {Thread.class.getName(), settingsClassName, lynxEnvClassName});
+  }
+
+  @RestrictTo(RestrictTo.Scope.LIBRARY)
+  public static String getCallerBacktrace(String ownerClassName, String matchMethodName,
+      String[] directSkippedClassNames, String[] fallbackSkippedClassNames) {
+    return getCallerBacktrace(Thread.currentThread().getStackTrace(), ownerClassName,
+        matchMethodName, directSkippedClassNames, fallbackSkippedClassNames);
+  }
+
+  /**
+   * Resolves the business caller for a switch-enable event. It first looks for the matched method
+   * on the owner class, then skips wrapper frames such as LynxEnv if requested. If that direct
+   * path is unavailable, it falls back to the first external frame while always ignoring VMStack.
+   */
+  @RestrictTo(RestrictTo.Scope.LIBRARY)
+  public static String getCallerBacktrace(StackTraceElement[] stackTrace, String ownerClassName,
+      String matchMethodName, String[] directSkippedClassNames,
+      String[] fallbackSkippedClassNames) {
+    if (stackTrace == null || stackTrace.length == 0) {
+      return "Unknown caller";
+    }
+
+    for (int i = 0; i < stackTrace.length; i++) {
+      StackTraceElement frame = stackTrace[i];
+      if (!matchMethodName.equals(frame.getMethodName())
+          || !ownerClassName.equals(frame.getClassName())) {
+        continue;
+      }
+
+      int traceStartIndex =
+          findFirstNonSkippedFrameIndex(stackTrace, i + 1, directSkippedClassNames);
+      if (traceStartIndex >= 0) {
+        return buildBacktrace(stackTrace, traceStartIndex);
+      }
+      break;
+    }
+
+    int fallbackIndex = findFirstExternalFrameIndex(stackTrace, fallbackSkippedClassNames);
+    if (fallbackIndex >= 0) {
+      return buildBacktrace(stackTrace, fallbackIndex);
+    }
+    return "Unknown caller";
+  }
+
+  private static int findFirstExternalFrameIndex(
+      StackTraceElement[] stackTrace, String... skippedClassNames) {
+    return findFirstNonSkippedFrameIndex(stackTrace, 0, skippedClassNames, true);
+  }
+
+  private static String buildBacktrace(StackTraceElement[] stackTrace, int traceStartIndex) {
+    StringBuilder backtrace = new StringBuilder();
+    int traceEndIndex = Math.min(traceStartIndex + MAX_REPORTED_CALLER_FRAMES, stackTrace.length);
+    for (int i = traceStartIndex; i < traceEndIndex; i++) {
+      if (backtrace.length() > 0) {
+        backtrace.append('\n');
+      }
+      backtrace.append(stackTrace[i]);
+    }
+    return backtrace.toString();
+  }
+
+  private static int findFirstNonSkippedFrameIndex(
+      StackTraceElement[] stackTrace, int startIndex, String... skippedClassNames) {
+    return findFirstNonSkippedFrameIndex(stackTrace, startIndex, skippedClassNames, false);
+  }
+
+  private static int findFirstNonSkippedFrameIndex(StackTraceElement[] stackTrace, int startIndex,
+      String[] skippedClassNames, boolean skipVmStack) {
+    if (stackTrace == null) {
+      return -1;
+    }
+
+    for (int i = Math.max(startIndex, 0); i < stackTrace.length; i++) {
+      String className = stackTrace[i].getClassName();
+      if (skipVmStack && VM_STACK_CLASS_NAME.equals(className)) {
+        continue;
+      }
+      if (!matchesAnyClassName(className, skippedClassNames)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static boolean matchesAnyClassName(String className, String[] skippedClassNames) {
+    if (skippedClassNames == null) {
+      return false;
+    }
+
+    for (String skippedClassName : skippedClassNames) {
+      if (skippedClassName.equals(className)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

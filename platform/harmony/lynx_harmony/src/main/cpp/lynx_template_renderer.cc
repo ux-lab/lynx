@@ -6,19 +6,23 @@
 
 #include <js_native_api.h>
 
+#include <atomic>
 #include <memory>
 #include <utility>
 
 #include "base/include/log/logging.h"
+#include "base/include/memory/memory_pressure_level.h"
+#include "base/include/notification_center.h"
 #include "base/include/platform/harmony/harmony_vsync_manager.h"
 #include "base/include/platform/harmony/napi_util.h"
 #include "base/trace/native/platform/harmony/trace_controller_delegate_harmony.h"
 #include "base/trace/native/trace_event.h"
 #include "core/base/harmony/napi_convert_helper.h"
-#include "core/base/memory/memory_pressure_callback.h"
+#include "core/base/threading/task_runner_manufactor.h"
 #include "core/renderer/data/harmony/template_data_harmony.h"
 #include "core/renderer/dom/harmony/lynx_template_bundle_harmony.h"
 #include "core/renderer/ui_wrapper/painting/harmony/ui_delegate_harmony.h"
+#include "core/renderer/utils/base/base_def.h"
 #include "core/runtime/js/bytecode/harmony/js_cache_manager_harmony.h"
 #include "core/services/event_report/harmony/event_tracker_harmony.h"
 #include "core/services/performance/harmony/performance_controller_harmony.h"
@@ -26,6 +30,7 @@
 #include "core/shell/common/platform_call_back.h"
 #include "core/shell/event_tracker_proxy_impl.h"
 #include "core/shell/harmony/native_facade_harmony.h"
+#include "core/shell/harmony/platform_call_back_harmony.h"
 #include "core/shell/harmony/tasm_platform_invoker_harmony.h"
 #include "core/shell/lynx_engine_proxy_impl.h"
 #include "core/shell/lynx_layout_proxy_impl.h"
@@ -36,6 +41,7 @@
 #include "core/shell/runtime/common/module_delegate_impl.h"
 #include "platform/harmony/lynx_harmony/src/main/cpp/base/base_trace_backend.h"
 #include "platform/harmony/lynx_harmony/src/main/cpp/lynx_white_board_harmony.h"
+#include "platform/harmony/lynx_harmony/src/main/cpp/text/emoji_resource_manager.h"
 #include "platform/harmony/lynx_harmony/src/main/cpp/ui/ui_new_image.h"
 
 #if ENABLE_TESTBENCH_REPLAY
@@ -62,6 +68,12 @@ bool CheckNapiUnwrapObject(napi_status status, void* obj, const char* message) {
   return true;
 }
 
+bool IsNapiFunction(napi_env env, napi_value value) {
+  napi_valuetype type = napi_undefined;
+  napi_typeof(env, value, &type);
+  return type == napi_function;
+}
+
 void PrepareEnvWidthScreenSize(int width, int height, float density,
                                float ratio, float display_density) {
   tasm::Config::InitializeVersion("1.0");
@@ -85,6 +97,17 @@ LynxTemplateRenderer::LynxTemplateRenderer(napi_env env, napi_value js_this,
 LynxTemplateRenderer::~LynxTemplateRenderer() {
   LOGI("~TemplateRenderer");
   int32_t instance_id = GetInstanceId();
+  if (weak_flag_) {
+    weak_flag_->renderer.store(nullptr, std::memory_order_release);
+  }
+  {
+    std::lock_guard<std::mutex> lock(inspector_owner_mutex_);
+    inspector_owner_.store(nullptr, std::memory_order_release);
+  }
+  if (auto lynx_context = lynx_context_.lock()) {
+    lynx_context->SetConsoleMessageCallback(nullptr);
+    lynx_context->SetInvokeCDPFromSDKCallback(nullptr);
+  }
   if (resource_loader_) {
     static_cast<LynxResourceLoaderHarmony*>(resource_loader_.get())
         ->DeleteRef();
@@ -95,8 +118,6 @@ LynxTemplateRenderer::~LynxTemplateRenderer() {
   session_storage_callback_refs_.clear();
   napi_delete_reference(env_, template_renderer_ref_);
   tasm::report::EventTracker::ClearCache(instance_id);
-
-  SetInspectorOwner(nullptr);
 }
 
 void LynxTemplateRenderer::SetUpLynxShell(
@@ -113,6 +134,9 @@ void LynxTemplateRenderer::SetUpLynxShell(
     LynxRuntimeWrapper* runtime_wrapper, LynxWhiteBoard* white_board) {
   ui_delegate_ = ui_delegate;
   resource_loader_ = resource_loader;
+  lynx_context_ = static_cast<tasm::harmony::UIDelegateHarmony*>(ui_delegate_)
+                      ->GetLynxContext();
+  SyncInspectorOwnerToLynxContext();
 
   float w = width / display_density_;
   float h = height / display_density_;
@@ -173,10 +197,14 @@ void LynxTemplateRenderer::SetUpLynxShell(
           .build());
   invoker_ptr->SetUITaskRunner(shell_->GetRunners()->GetUITaskRunner());
 
-  if (inspector_owner_ != nullptr) {
-    inspector_owner_->SetUITaskRunner(shell_->GetRunners()->GetUITaskRunner());
-    inspector_owner_->OnTemplateAssemblerCreated(
-        reinterpret_cast<intptr_t>(shell_.get()));
+  {
+    std::lock_guard<std::mutex> lock(inspector_owner_mutex_);
+    auto* inspector_owner = inspector_owner_.load(std::memory_order_acquire);
+    if (inspector_owner != nullptr) {
+      inspector_owner->SetUITaskRunner(shell_->GetRunners()->GetUITaskRunner());
+      inspector_owner->OnTemplateAssemblerCreated(
+          reinterpret_cast<intptr_t>(shell_.get()));
+    }
   }
   engine_proxy_ =
       std::make_shared<shell::LynxEngineProxyImpl>(shell_->GetEngineActor());
@@ -308,9 +336,13 @@ void LynxTemplateRenderer::LoadTemplate(
     const std::shared_ptr<lynx::tasm::PipelineOptions>& pipeline_options,
     const std::shared_ptr<tasm::TemplateData>& template_data,
     bool enable_recycle_template_bundle) {
-  if (inspector_owner_ != nullptr) {
-    inspector_owner_->OnLoadTemplate(url, source, template_data);
-    inspector_owner_->OnLoaded(url);
+  {
+    std::lock_guard<std::mutex> lock(inspector_owner_mutex_);
+    auto* inspector_owner = inspector_owner_.load(std::memory_order_acquire);
+    if (inspector_owner != nullptr) {
+      inspector_owner->OnLoadTemplate(url, source, template_data);
+      inspector_owner->OnLoaded(url);
+    }
   }
   pipeline_options->enable_pre_painting = false;
   pipeline_options->enable_recycle_template_bundle =
@@ -428,6 +460,10 @@ bool LynxTemplateRenderer::ShouldSendEventToMainThread() const {
 
 void LynxTemplateRenderer::UpdateFontScale(float font_scale) {
   shell_->UpdateFontScale(font_scale);
+}
+
+void LynxTemplateRenderer::UpdateColorScheme(int scheme) {
+  shell_->UpdateColorScheme(scheme);
 }
 
 void LynxTemplateRenderer::SetEnableBytecode(bool enable,
@@ -590,6 +626,7 @@ napi_value LynxTemplateRenderer::Init(napi_env env, napi_value exports) {
       DECLARE_NAPI_METHOD("getAllTimingInfo", GetAllTimingInfo),
       DECLARE_NAPI_METHOD("getInstanceId", GetInstanceId),
       DECLARE_NAPI_METHOD("updateFontScale", UpdateFontScale),
+      DECLARE_NAPI_METHOD("updateColorScheme", UpdateColorScheme),
       DECLARE_NAPI_METHOD("nativeSetEnableBytecode", NativeSetEnableBytecode),
       DECLARE_NAPI_METHOD("getPageDataByKey", GetPageDataByKey),
       DECLARE_NAPI_METHOD("setupExtensionDelegate", SetupExtensionDelegate),
@@ -601,6 +638,9 @@ napi_value LynxTemplateRenderer::Init(napi_env env, napi_value exports) {
                           SubscribeSessionStorage),
       DECLARE_NAPI_METHOD("nativeUnsubscribeSessionStorage",
                           UnsubscribeSessionStorage),
+      DECLARE_NAPI_METHOD("nativeGetLynxElementRoot", GetLynxElementRoot),
+      DECLARE_NAPI_METHOD("nativeLynxElementToJSONString",
+                          LynxElementToJSONString),
       DECLARE_NAPI_METHOD("nativeGetAllJsSource", GetAllJsSource),
       DECLARE_NAPI_METHOD("invokeLepusCallback", InvokeLepusCallback),
   };
@@ -615,6 +655,10 @@ napi_value LynxTemplateRenderer::Init(napi_env env, napi_value exports) {
   NAPI_CREATE_FUNCTION(env, exports, "initGlobalEnv", InitGlobalEnv);
   NAPI_CREATE_FUNCTION(env, exports, "registerImageService",
                        RegisterImageService);
+  NAPI_CREATE_FUNCTION(env, exports, "setEmojiResourceFetcher",
+                       SetEmojiResourceFetcher);
+  NAPI_CREATE_FUNCTION(env, exports, "preloadCommonEmojiResources",
+                       PreloadCommonEmojiResources);
   NAPI_CREATE_FUNCTION(env, exports, "getBaseTraceBackend",
                        GetBaseTraceBackend);
   NAPI_CREATE_FUNCTION(env, exports, "setTracingDirPath", SetTracingDirPath);
@@ -706,6 +750,25 @@ napi_value LynxTemplateRenderer::RegisterImageService(napi_env env,
   return nullptr;
 }
 
+napi_value LynxTemplateRenderer::SetEmojiResourceFetcher(
+    napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc >= 1 && args[0]) {
+    tasm::harmony::EmojiResourceManager::GetInstance().SetEmojiResourceFetcher(
+        env, args[0]);
+  }
+  return nullptr;
+}
+
+napi_value LynxTemplateRenderer::PreloadCommonEmojiResources(
+    napi_env env, napi_callback_info info) {
+  tasm::harmony::EmojiResourceManager::GetInstance()
+      .EnsureEmojiResourcesLoaded();
+  return nullptr;
+}
+
 napi_value LynxTemplateRenderer::NativeAttach(napi_env env,
                                               napi_callback_info info) {
   napi_value js_this;
@@ -793,7 +856,7 @@ napi_value LynxTemplateRenderer::NativeReset(napi_env env,
   napi_get_value_bool(env, args[14], &enable_js);
 
   // module
-  static constexpr uint32_t kArgsSize = 4;
+  static constexpr uint32_t kArgsSize = 5;
   napi_value module_args[kArgsSize];
   base::NapiUtil::ConvertToArray(env, args[15], module_args, kArgsSize);
   napi_value sendable_module_args[kArgsSize];
@@ -938,8 +1001,11 @@ napi_value LynxTemplateRenderer::NotifyMemoryPressure(napi_env env,
   } else if (pressure > 2) {
     pressure = 2;
   }
-  lynx::base::MemoryPressureCallback::NotifyMemoryPressure(
-      static_cast<lynx::base::MemoryPressureLevel>(pressure));
+  if (static_cast<lynx::base::MemoryPressureLevel>(pressure) !=
+      lynx::base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_NONE) {
+    lynx::base::NotificationCallback::Notify(
+        lynx::base::MEMORY_PRESSURE_NOTIFICATION, pressure);
+  }
   return nullptr;
 }
 
@@ -1536,6 +1602,25 @@ napi_value LynxTemplateRenderer::UpdateFontScale(napi_env env,
   return nullptr;
 }
 
+napi_value LynxTemplateRenderer::UpdateColorScheme(napi_env env,
+                                                   napi_callback_info info) {
+  napi_value js_this;
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, &js_this, nullptr);
+
+  auto scheme = base::NapiUtil::ConvertToInt32(env, args[0]);
+
+  LynxTemplateRenderer* obj = nullptr;
+  napi_status status =
+      napi_unwrap(env, js_this, reinterpret_cast<void**>(&obj));
+  if (!CheckNapiUnwrapObject(status, obj, "NativeUpdateColorScheme failed")) {
+    return nullptr;
+  }
+  obj->UpdateColorScheme(scheme);
+  return nullptr;
+}
+
 napi_value LynxTemplateRenderer::NativeSetEnableBytecode(
     napi_env env, napi_callback_info info) {
   napi_value js_this;
@@ -1799,6 +1884,72 @@ napi_value LynxTemplateRenderer::UnsubscribeSessionStorage(
   return nullptr;
 }
 
+napi_value LynxTemplateRenderer::GetLynxElementRoot(napi_env env,
+                                                    napi_callback_info info) {
+  napi_value js_this = nullptr;
+  size_t argc = 1;
+  napi_value args[1] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, &js_this, nullptr);
+
+  if (argc < 1 || !IsNapiFunction(env, args[0])) {
+    return nullptr;
+  }
+
+  auto callback =
+      std::make_unique<shell::PlatformCallBackHarmony>(env, args[0]);
+
+  LynxTemplateRenderer* obj = nullptr;
+  napi_status status =
+      napi_unwrap(env, js_this, reinterpret_cast<void**>(&obj));
+  if (!CheckNapiUnwrapObject(status, obj, "GetLynxElementRoot failed")) {
+    callback->InvokeWithValue(lepus::Value(tasm::kInvalidImplId));
+    return nullptr;
+  }
+
+  if (!obj->shell_ || obj->shell_->IsDestroyed()) {
+    callback->InvokeWithValue(lepus::Value(tasm::kInvalidImplId));
+    return nullptr;
+  }
+
+  obj->shell_->GetLynxElementRootSignAsync(std::move(callback));
+  return nullptr;
+}
+
+napi_value LynxTemplateRenderer::LynxElementToJSONString(
+    napi_env env, napi_callback_info info) {
+  napi_value js_this = nullptr;
+  size_t argc = 2;
+  napi_value args[2] = {nullptr};
+  napi_get_cb_info(env, info, &argc, args, &js_this, nullptr);
+
+  if (argc < 2 || !IsNapiFunction(env, args[1])) {
+    return nullptr;
+  }
+
+  int32_t sign = tasm::kInvalidImplId;
+  napi_get_value_int32(env, args[0], &sign);
+
+  auto callback =
+      std::make_unique<shell::PlatformCallBackHarmony>(env, args[1]);
+
+  LynxTemplateRenderer* obj = nullptr;
+  napi_status status =
+      napi_unwrap(env, js_this, reinterpret_cast<void**>(&obj));
+  if (!CheckNapiUnwrapObject(status, obj, "LynxElementToJSONString failed")) {
+    callback->InvokeWithValue(lepus::Value(""));
+    return nullptr;
+  }
+
+  if (sign == tasm::kInvalidImplId || !obj->shell_ ||
+      obj->shell_->IsDestroyed()) {
+    callback->InvokeWithValue(lepus::Value(""));
+    return nullptr;
+  }
+
+  obj->shell_->GetLynxElementTreeAsJSONStringAsync(sign, std::move(callback));
+  return nullptr;
+}
+
 void LynxTemplateRenderer::OnPageConfigDecoded(
     const std::shared_ptr<tasm::PageConfig>& config) {
   // Main thread
@@ -1875,13 +2026,15 @@ void LynxTemplateRenderer::LoadTemplateFromURL(
       req, [weak_flag = weak_flag_->weak_from_this(), url, init_data,
             &pipeline_options](pub::LynxResourceResponse& response) {
         auto flag = weak_flag.lock();
-        if (!flag) {
+        auto* renderer =
+            flag ? flag->renderer.load(std::memory_order_acquire) : nullptr;
+        if (!renderer) {
           return;
         }
         auto data_size = response.data.size();
         LOGI("LoadTemplateFromURL data_size: " << data_size);
-        flag->renderer->LoadTemplate(url, std::move(response.data),
-                                     pipeline_options, init_data, false);
+        renderer->LoadTemplate(url, std::move(response.data), pipeline_options,
+                               init_data, false);
       });
 }
 
@@ -1924,7 +2077,67 @@ void LynxTemplateRenderer::SetupExtensionDelegate(
 
 void LynxTemplateRenderer::SetInspectorOwner(
     devtool::LynxInspectorOwner* owner) {
-  inspector_owner_ = owner;
+  {
+    std::lock_guard<std::mutex> lock(inspector_owner_mutex_);
+    inspector_owner_.store(owner, std::memory_order_release);
+  }
+  SyncInspectorOwnerToLynxContext();
+}
+
+void LynxTemplateRenderer::SyncInspectorOwnerToLynxContext() {
+  std::shared_ptr<tasm::harmony::LynxContext> lynx_context =
+      lynx_context_.lock();
+  if (!lynx_context && ui_delegate_) {
+    lynx_context = static_cast<tasm::harmony::UIDelegateHarmony*>(ui_delegate_)
+                       ->GetLynxContext();
+    lynx_context_ = lynx_context;
+  }
+  if (!lynx_context) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(inspector_owner_mutex_);
+    if (inspector_owner_.load(std::memory_order_acquire) == nullptr) {
+      lynx_context->SetConsoleMessageCallback(nullptr);
+      lynx_context->SetInvokeCDPFromSDKCallback(nullptr);
+      return;
+    }
+  }
+  std::weak_ptr<WeakFlag> weak_flag = weak_flag_;
+  lynx_context->SetConsoleMessageCallback(
+      [weak_flag](const std::string& message, int32_t level,
+                  int64_t time_stamp) {
+        auto flag = weak_flag.lock();
+        auto* renderer =
+            flag ? flag->renderer.load(std::memory_order_acquire) : nullptr;
+        if (!renderer) {
+          return;
+        }
+        std::lock_guard<std::mutex> lock(renderer->inspector_owner_mutex_);
+        auto* inspector_owner =
+            renderer->inspector_owner_.load(std::memory_order_acquire);
+        if (!inspector_owner) {
+          return;
+        }
+        inspector_owner->DispatchConsoleMessage(message, level, time_stamp);
+      });
+  lynx_context->SetInvokeCDPFromSDKCallback(
+      [weak_flag](const std::string& cdp_msg,
+                  tasm::harmony::LynxContext::CDPResultCallback callback) {
+        auto flag = weak_flag.lock();
+        auto* renderer =
+            flag ? flag->renderer.load(std::memory_order_acquire) : nullptr;
+        if (!renderer) {
+          return;
+        }
+        std::lock_guard<std::mutex> lock(renderer->inspector_owner_mutex_);
+        auto* inspector_owner =
+            renderer->inspector_owner_.load(std::memory_order_acquire);
+        if (!inspector_owner) {
+          return;
+        }
+        inspector_owner->InvokeCDPFromSDK(cdp_msg, std::move(callback));
+      });
 }
 
 void LynxTemplateRenderer::EmulateTouch(const std::string& event_type, int x,

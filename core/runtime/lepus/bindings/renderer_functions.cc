@@ -596,6 +596,33 @@ RENDERER_FUNCTION_CC(GetSessionStorageItem) {
   RETURN_UNDEFINED();
 }
 
+RENDERER_FUNCTION_CC(SubscribeSessionStorage) {
+  CHECK_ARGC_EQ(SubscribeSessionStorage, 3);
+  CONVERT_ARG_AND_CHECK(arg0, 0, String, SubscribeSessionStorage);
+  CONVERT_ARG_AND_CHECK(arg1, 1, Number, SubscribeSessionStorage);
+  CONVERT_ARG_AND_CHECK(arg2, 2, Callable, SubscribeSessionStorage);
+  auto* tasm = GET_TASM_POINTER();
+  auto white_board_delegate = tasm->GetWhiteBoardDelegate();
+  if (white_board_delegate) {
+    white_board_delegate->SubscribeLepusSessionStorage(arg0->StdString(),
+                                                       arg1->Number(), *arg2);
+  }
+  RETURN_UNDEFINED();
+}
+
+RENDERER_FUNCTION_CC(UnsubscribeSessionStorage) {
+  CHECK_ARGC_EQ(UnsubscribeSessionStorage, 2);
+  CONVERT_ARG_AND_CHECK(arg0, 0, String, UnsubscribeSessionStorage);
+  CONVERT_ARG_AND_CHECK(arg1, 1, Number, UnsubscribeSessionStorage);
+  auto* tasm = GET_TASM_POINTER();
+  auto white_board_delegate = tasm->GetWhiteBoardDelegate();
+  if (white_board_delegate) {
+    white_board_delegate->UnsubscribeLepusSessionStorage(arg0->StdString(),
+                                                         arg1->Number());
+  }
+  RETURN_UNDEFINED();
+}
+
 RENDERER_FUNCTION_CC(StopExposure) {
   CHECK_ARGC_EQ(StopExposure, 1);
   lepus::Value* options = nullptr;
@@ -2659,7 +2686,7 @@ RENDERER_FUNCTION_CC(FiberCreateComponent) {
   // [4] String -> component name
   // [5] String -> component path
   // [6] Object -> component config, not used now
-  // [7] Object|Undefined -> optional info, not used now
+  // [7] Object|Undefined -> optional element info
   CHECK_ARGC_GE(FiberCreateComponent, 6);
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg0, 0, Number, FiberCreateComponent);
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg1, 1, String, FiberCreateComponent);
@@ -2667,8 +2694,6 @@ RENDERER_FUNCTION_CC(FiberCreateComponent) {
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg3, 3, String, FiberCreateComponent);
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg4, 4, String, FiberCreateComponent);
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg5, 5, String, FiberCreateComponent);
-  CONVERT_ARG(arg6, 6);
-
   auto* self = GET_TASM_POINTER();
   auto& manager = self->page_proxy()->element_manager();
   const auto& parent_component_unique_id = static_cast<int64_t>(arg0->Number());
@@ -2688,21 +2713,35 @@ RENDERER_FUNCTION_CC(FiberCreateComponent) {
   component_element->set_style_sheet_manager(
       self->style_sheet_manager(entry_name_str));
 
-  if (argc >= 7 && arg6->IsObject()) {
-    if (arg6->GetProperty(BASE_STATIC_STRING(kRemoveComponentElement))
-            .IsTrue()) {
-      component_element->MarkAsWrapperComponent();
+  if (argc >= 7) {
+    CONVERT_ARG(arg6, 6);
+    if (arg6->IsObject()) {
+      if (arg6->GetProperty(BASE_STATIC_STRING(kRemoveComponentElement))
+              .IsTrue()) {
+        component_element->MarkAsWrapperComponent();
+      }
+      // TODO(zhouzhitao): Currently, the Component Element is non-standard, and
+      // in fact, TTML is given a non-standard behavior based on this
+      // non-standard Component Element. In the future, the Component Element is
+      // expected to be gradually deprecated, and TTML should also migrate to
+      // the standard API. Therefore, for now, this logic will not be added to
+      // SetConfig; the standard behavior should be a combination of the two
+      // PAPIs.
+      if (arg6->GetProperty(BASE_STATIC_STRING(kIsAsyncFlushRoot)).IsTrue()) {
+        component_element->MarkAsyncFlushRoot(true);
+      }
+      component_element->SetConfig(arg6->ToLepusValue());
     }
-    // TODO(zhouzhitao): Currently, the Component Element is non-standard, and
-    // in fact, TTML is given a non-standard behavior based on this non-standard
-    // Component Element. In the future, the Component Element is expected to be
-    // gradually deprecated, and TTML should also migrate to the standard API.
-    // Therefore, for now, this logic will not be added to SetConfig; the
-    // standard behavior should be a combination of the two PAPIs.
-    if (arg6->GetProperty(BASE_STATIC_STRING(kIsAsyncFlushRoot)).IsTrue()) {
-      component_element->MarkAsyncFlushRoot(true);
+  }
+
+  if (argc >= 8) {
+    CONVERT_ARG(arg7, 7);
+    if (arg7->IsObject()) {
+      const auto& nid = arg7->GetProperty(BASE_STATIC_STRING(kNodeIndex));
+      if (nid.IsNumber()) {
+        component_element->SetNodeIndex(nid.Number());
+      }
     }
-    component_element->SetConfig(arg6->ToLepusValue());
   }
 
   ON_NODE_CREATE(component_element);
@@ -3674,15 +3713,20 @@ RENDERER_FUNCTION_CC(FiberCreateTypedElementTemplate) {
   element->SetElementSlots(element_slots);
   element->SetOptions(options);
   element->SetUid(*arg3);
+  fml::RefPtr<FiberElement> typed_page_root = nullptr;
   if (arg0->String().IsEqual(kElementPageTag)) {
     // Page templates are root templates, so materialize the root eagerly while
     // still returning the TemplateElement shell for template APIs.
-    if (element->GetRoot() == nullptr) {
+    typed_page_root = element->GetRoot();
+    if (typed_page_root == nullptr) {
       RETURN_UNDEFINED();
     }
   }
 
   ON_NODE_CREATE(element);
+  if (typed_page_root != nullptr) {
+    ON_NODE_ADDED(typed_page_root);
+  }
 
   RETURN(lepus::Value(element));
 }
@@ -3774,6 +3818,15 @@ RENDERER_FUNCTION_CC(FiberRemoveNodeFromElementTemplate) {
         "FiberRemoveNodeFromElementTemplate typed template only supports "
         "element slot 0");
     RETURN_UNDEFINED();
+  }
+  if (ctx != nullptr) {
+    auto removed_element =
+        child->is_template()
+            ? static_cast<TemplateElement*>(child.get())->GetResolvedRoot()
+            : child;
+    if (removed_element != nullptr) {
+      ON_NODE_REMOVED(removed_element);
+    }
   }
   template_element->RemoveElementSlotChild(slot_index, child);
   RETURN_UNDEFINED();
@@ -4799,15 +4852,17 @@ RENDERER_FUNCTION_CC(FiberSetCSSId) {
   CONVERT_ARG(arg0, 0);
   CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg1, 1, Number, FiberSetCSSId);
   std::string entry_name = tasm::DEFAULT_ENTRY_NAME;
+  bool has_entry_name = false;
   if (argc > 2) {
     CONVERT_ARG_AND_CHECK_FOR_ELEMENT_API(arg2, 2, String, FiberSetCSSId);
     entry_name = arg2->StdString();
+    has_entry_name = !entry_name.empty();
   }
 
   std::shared_ptr<CSSStyleSheetManager> style_sheet_manager =
       self->style_sheet_manager(entry_name);
-  auto looper = [style_sheet_manager, arg1](const lepus::Value& key,
-                                            const lepus::Value& value) {
+  auto looper = [style_sheet_manager, arg1, has_entry_name, entry_name](
+                    const lepus::Value& key, const lepus::Value& value) {
     if (!value.IsRefCounted()) {
       ElementAPIError(
           "FiberSetCSSId params 0 type should use RefCounted or "
@@ -4817,6 +4872,9 @@ RENDERER_FUNCTION_CC(FiberSetCSSId) {
 
     auto element = fml::static_ref_ptr_cast<FiberElement>(value.RefCounted());
     element->set_style_sheet_manager(style_sheet_manager);
+    if (has_entry_name) {
+      element->set_entry_name(base::String(entry_name));
+    }
     // For Lynx SDK's version < 2.17, when `ComponentElement` executes
     // `FiberSetCSSId`, it changes the `component_css_id_` of `ComponentElement`
     // instead of `css_id_`, which does not meet expectations. Since this API is
@@ -4932,13 +4990,12 @@ RENDERER_FUNCTION_CC(FiberFlushElementTree) {
           fml::static_ref_ptr_cast<FiberElement>(arg0->RefCounted()).get();
     }
   }
-  fml::RefPtr<FiberElement> materialized_template_root;
-  if (element != nullptr && element->is_template()) {
-    materialized_template_root =
-        static_cast<TemplateElement*>(element)->GetRoot();
-    if (materialized_template_root != nullptr) {
-      element = materialized_template_root.get();
-    }
+
+  // TemplateElement's materialized root is not attached to the main element
+  // tree. Flush through the nearest non-template ancestor so the following
+  // patch pipeline can resolve a target that is attached to the root tree.
+  while (element != nullptr && element->is_template()) {
+    element = static_cast<FiberElement*>(element->parent());
   }
 
   bool trigger_data_updated = false;

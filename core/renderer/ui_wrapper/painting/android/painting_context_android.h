@@ -4,6 +4,8 @@
 
 #ifndef CORE_RENDERER_UI_WRAPPER_PAINTING_ANDROID_PAINTING_CONTEXT_ANDROID_H_
 #define CORE_RENDERER_UI_WRAPPER_PAINTING_ANDROID_PAINTING_CONTEXT_ANDROID_H_
+
+#include <array>
 #include <memory>
 #include <queue>
 #include <string>
@@ -100,6 +102,8 @@ class PaintingContextAndroid : public PaintingCtxPlatformImpl {
                     const float* borders, const float* bounds,
                     const float* sticky, float max_height,
                     uint32_t node_index) override;
+  void RecordInitialLynxUITreeForReplay(
+      std::vector<InitialLynxUITreeNodeForReplay> nodes) override;
   void UpdatePlatformExtraBundle(int32_t id,
                                  PlatformExtraBundle* bundle) override;
   void SetFrameAppBundle(
@@ -122,6 +126,8 @@ class PaintingContextAndroid : public PaintingCtxPlatformImpl {
   std::vector<float> getWindowSize(int id) override;
   std::vector<float> GetRectToWindow(int id) override;
   std::vector<float> GetRectToLynxView(int64_t id) override;
+  void getAbsolutePosition(int id, float* position) override;
+  void GetRectToScreen(int id, float* rect) override;
   std::vector<float> ScrollBy(int64_t id, float width, float height) override;
   void Invoke(int64_t id, const std::string& method, const pub::Value& params,
               const std::function<void(int32_t code, const pub::Value& data)>&
@@ -222,7 +228,7 @@ class PaintingContextAndroid : public PaintingCtxPlatformImpl {
   std::vector<std::array<int, static_cast<size_t>(IntValueIndex::SIZE)>>
       patching_ints_;
   std::vector<std::array<float, 4>> patching_bounds_;
-  std::vector<std::array<float, 4>> patching_stickies_;
+  std::vector<std::array<float, 10>> patching_stickies_;
   std::shared_ptr<base::android::ScopedWeakGlobalJavaRef<jobject>> impl_;
   PaintingContextAndroid(const PaintingContextAndroid&) = delete;
   PaintingContextAndroid& operator=(const PaintingContextAndroid&) = delete;

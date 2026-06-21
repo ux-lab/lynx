@@ -12,8 +12,6 @@ base_shared_sources = [
                         "lynx_export.h",
                         "lynx_settings.cc",
                         "lynx_settings.h",
-                        "memory/memory_pressure_callback.cc",
-                        "memory/memory_pressure_callback.h",
                         "memory/unsafe_owning_ptr.h",
                         "thread/once_task.h",
                         "thread/thread_utils.cc",
@@ -79,12 +77,18 @@ if (is_android) {
 } else if (is_apple) {
   if (!enable_unittests && !is_oliver_node_lynx && !is_oliver_tasm &&
       (!is_mac || !desktop_enable_embedder_layer)) {
+    import("../../clay/common/config.gni")
+
     base_shared_sources += [
       "darwin/lynx_env_darwin.h",
       "darwin/lynx_env_darwin.mm",
-      "darwin/lynx_trail_hub_impl_darwin.h",
-      "darwin/lynx_trail_hub_impl_darwin.mm",
     ]
+    if (!use_clay_lynx_trail_hub_impl) {
+      base_shared_sources += [
+        "darwin/lynx_trail_hub_impl_darwin.h",
+        "darwin/lynx_trail_hub_impl_darwin.mm",
+      ]
+    }
   }
   if (is_ios) {
     base_shared_sources += [
@@ -197,7 +201,6 @@ lynx_core_source_set("gtest_lynx_base_android") {
 unittest_set("base_testset") {
   sources = [
     "json/json_utils_unittests.cc",
-    "memory/memory_pressure_callback_unittest.cc",
     "memory/unsafe_owning_ptr_unittest.cc",
     "thread/blocking_queue_unittest.cc",
     "thread/once_task_unittest.cc",

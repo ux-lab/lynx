@@ -70,6 +70,7 @@ class MTSContext {
   virtual void Initialize() = 0;
 
   virtual ContextType Type() const = 0;
+  virtual std::string GetDebugDescription() const = 0;
 
   bool IsVMContext() const { return Type() == ContextType::VMContextType; }
   bool IsLepusNGContext() const {
@@ -220,7 +221,7 @@ class MTSContext {
 
   void ReportGCTimingEvent(const char* start, const char* end);
 
-  void OnContextGC(std::string mem_info);
+  void OnContextGC(std::unordered_map<std::string, std::string> mem_info);
 
  protected:
   // Inject this lynx as the global Lynx object to the Lepus runtime.

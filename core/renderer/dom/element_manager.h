@@ -38,8 +38,8 @@
 #include "core/renderer/dom/element_context_delegate.h"
 #include "core/renderer/dom/element_context_task_queue.h"
 #include "core/renderer/dom/element_vsync_proxy.h"
-#include "core/renderer/dom/fiber/generated_elements_result.h"
 #include "core/renderer/dom/fiber/page_element.h"
+#include "core/renderer/dom/fiber/template_element.h"
 #include "core/renderer/dom/vdom/radon/radon_types.h"
 #include "core/renderer/layout_scheduler/layout_scheduler.h"
 #include "core/renderer/pipeline/pipeline_layout_data.h"
@@ -86,13 +86,6 @@ class LynxEnvConfig;
 class TemplateAssembler;
 class ElementLayoutNodeManager;
 class ElementManagerDelegate;
-
-struct CachedTemplateElementTree {
-  base::String bundle_url_;
-  base::String template_key_;
-  GeneratedElementsResult generated_;
-  lepus::Value applied_attribute_slots_;
-};
 
 class HierarchyObserver {
  public:
@@ -287,6 +280,8 @@ class ElementManager : public ElementContextDelegate,
   inline Catalyzer *catalyzer() { return catalyzer_.get(); }
   inline NodeManager *node_manager() { return node_manager_.get(); }
 
+  void RecordCurrentLynxUITree();
+
   inline void SetRoot(Element *node) { root_ = node; }
   Element *root() { return root_; }
 
@@ -301,6 +296,7 @@ class ElementManager : public ElementContextDelegate,
 
   void UpdateScreenMetrics(float width, float height);
   void UpdateFontScale(float font_scale);
+  void UpdateColorScheme(int scheme);
   void UpdateViewport(float width, SLMeasureMode width_mode_, float height,
                       SLMeasureMode height_mode, bool need_layout);
 
@@ -605,16 +601,22 @@ class ElementManager : public ElementContextDelegate,
   }
 
   bool GetEnableNativeListFromShell() const { return enable_native_list_; }
-
-  void PutCachedTemplateElementTree(const base::String &bundle_url,
-                                    const base::String &template_key,
-                                    CachedTemplateElementTree cached_tree);
-  bool TakeCachedTemplateElementTree(const base::String &bundle_url,
-                                     const base::String &template_key,
-                                     CachedTemplateElementTree *cached_tree);
+  // Cache APIs used by TemplateElement to park and reclaim detached list-item
+  // template trees.
+  void CacheListItemTemplateElementTree(
+      const fml::RefPtr<TemplateElement> &element,
+      const base::String &bundle_url, const base::String &template_key);
+  fml::RefPtr<TemplateElement> TakeCachedTemplateElementTree(
+      TemplateElement *owner, const base::String &bundle_url,
+      const base::String &template_key);
+  void RemoveCachedTemplateElementTreeForOwner(TemplateElement *owner);
 
   bool GetEnableNativeListFromPageConfig() const {
     return config_ && config_->GetEnableNativeList() == TernaryBool::TRUE_VALUE;
+  }
+
+  bool GetEnableNativeListFromEnv() const {
+    return LynxEnv::GetInstance().EnableNativeList();
   }
 
   bool GetEnableNewGesture() {
@@ -669,6 +671,13 @@ class ElementManager : public ElementContextDelegate,
   bool GetListEnablePlug() {
     if (config_) {
       return config_->GetEnableListPlug();
+    }
+    return false;
+  }
+
+  bool GetEnableNewSticky() {
+    if (config_) {
+      return config_->GetEnableNewSticky();
     }
     return false;
   }
@@ -786,6 +795,10 @@ class ElementManager : public ElementContextDelegate,
 
   bool GetEnableMultiTouchParamsCompatible() const {
     return config_ ? config_->GetEnableMultiTouchParamsCompatible() : false;
+  }
+
+  bool GetEnableEventTargetInfoNodeIndex() const {
+    return config_ ? config_->GetEnableEventTargetInfoNodeIndex() : false;
   }
 
   std::shared_ptr<base::VSyncMonitor> &vsync_monitor() {
@@ -955,6 +968,10 @@ class ElementManager : public ElementContextDelegate,
       const lepus::Value &component_at_index,
       const lepus::Value &enqueue_component,
       const lepus::Value &component_at_indexes);
+  // List layout consumes materialized roots, while Element Template callbacks
+  // track list item state by the TemplateElement shell uid.
+  int32_t ResolveTemplateElementRootIdForList(int32_t id);
+  int32_t ResolveTemplateElementShellIdForList(int32_t id);
 
   /**
    * create None Element, it's just meaningless Node
@@ -1081,8 +1098,8 @@ class ElementManager : public ElementContextDelegate,
     return parallel_task_queue_;
   }
 
-  std::list<base::OnceTaskRefptr<ParallelFlushReturn>> &
-  ParallelResolveTreeTasks() {
+  auto ParallelResolveTreeTasks()
+      -> std::list<base::OnceTaskRefptr<ParallelFlushReturn>> & {
     return parallel_resolve_tree_tasks_queue_;
   }
 
@@ -1329,6 +1346,10 @@ class ElementManager : public ElementContextDelegate,
   ElementManager(const ElementManager &) = delete;
   ElementManager &operator=(const ElementManager &) = delete;
   void OnListComponentUpdated(const std::shared_ptr<PipelineOptions> &options);
+  fml::RefPtr<TemplateElement> TakeCachedTemplateElementTreeForOwner(
+      TemplateElement *owner);
+  fml::RefPtr<TemplateElement> TakeCachedTemplateElementTreeForKey(
+      const base::String &bundle_url, const base::String &template_key);
 
   const int instance_id_;
   int32_t element_id_{kInitialImplId};
@@ -1443,7 +1464,10 @@ class ElementManager : public ElementContextDelegate,
       std::make_shared<lynx::tasm::PropBundleCreatorDefault>();
 
   base::InlineLinearFlatSet<BaseElementContainer *, 4> dirty_stacking_contexts_;
-  base::Vector<CachedTemplateElementTree> cached_template_element_trees_;
+  std::unordered_map<int32_t, int32_t> list_template_root_id_to_shell_id_;
+  std::map<TemplateElementTreeCacheKey,
+           std::vector<fml::RefPtr<TemplateElement>>>
+      cached_template_element_trees_;
 
   // TODO(yuyang), check this
   // This set holds the unique_id of the already flushed keyframes to ensure

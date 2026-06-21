@@ -1,6 +1,10 @@
 import os
 import platform
+import sys
 import zipfile
+sys.path.insert(0, root_dir)
+sys.path.append(os.path.join(root_dir, '..', 'lynx'))
+import dependencies.revision as revision
 
 
 system = platform.system().lower()
@@ -15,6 +19,43 @@ if system == "windows":
 def unzip_webview2():
   zipfile.ZipFile('webview2.nupkg').extractall('Microsoft.Web.WebView2.1.0.902.49')
   os.remove('webview2.nupkg')
+
+
+def symlink_file(source, target):
+    source = os.path.relpath(source.strip(), os.path.dirname(target))
+    if os.path.islink(target) and os.readlink(target) == source:
+        return
+    if os.path.exists(target) or os.path.islink(target):
+        os.remove(target)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.symlink(source, target)
+
+
+# ========= variables and script for pnpm setup =========
+BUILDTOOLS_PATH = os.path.join(root_dir, "buildtools")
+NODE_PATH = os.path.join(BUILDTOOLS_PATH, "node", "bin", "node")
+PNPM_PATH = os.path.join(BUILDTOOLS_PATH, "corepack", "pnpm")
+if system == "windows":
+    NODE_PATH = os.path.join(BUILDTOOLS_PATH, "node", "node.exe")
+
+def prepare_pnpm_shim():
+    pnpm_script_path = os.path.join(PNPM_PATH, "7.33.6", "bin", "pnpm.cjs")
+    pnpx_script_path = os.path.join(PNPM_PATH, "7.33.6", "bin", "pnpx.cjs")
+    if system == "windows":
+        pnpm_shim_path = os.path.join(PNPM_PATH, "pnpm.cmd")
+        pnpx_shim_path = os.path.join(PNPM_PATH, "pnpx.cmd")
+        with open(pnpm_shim_path, "w", encoding="utf-8") as f:
+            f.write("@echo off\n")
+            f.write(f"\"{NODE_PATH}\" \"{pnpm_script_path}\" %*\n")
+        with open(pnpx_shim_path, "w", encoding="utf-8") as f:
+            f.write("@echo off\n")
+            f.write(f"\"{NODE_PATH}\" \"{pnpx_script_path}\" %*\n")
+    else:
+        pnpm_shim_path = os.path.join(PNPM_PATH, "pnpm")
+        pnpx_shim_path = os.path.join(PNPM_PATH, "pnpx")
+        symlink_file(pnpm_script_path, pnpm_shim_path)
+        symlink_file(pnpx_script_path, pnpx_shim_path)
+# =======================================================
 
 
 deps = {
@@ -65,7 +106,7 @@ deps = {
     "third_party/xhook": {
         'type': 'git',
         'url': 'https://github.com/iqiyi/xHook.git',
-        'commit': 'e59285034feadfdd4ba9b65e1eea1d381da83ed3',
+        'commit': revision.XHOOK,
         "patches": os.path.join(root_dir, 'patches', 'xhook', '*.patch'),
         "ignore_in_git": True,
     },
@@ -108,14 +149,14 @@ deps = {
     'third_party/gyp': {
         "type": "git",
         "url": "https://chromium.googlesource.com/external/gyp",
-        "commit": "9d09418933ea2f75cc416e5ce38d15f62acd5c9a",
+        "commit": revision.GYP,
         "ignore_in_git": True,
         "condition": system in ['linux', 'darwin', 'windows'],
     },
     'build': {
         "type": "git",
         "url": "https://github.com/lynx-family/buildroot.git",
-        "commit": "e6387e5ed9c8dd79c23bfc7aaef403ebc2f3153e",
+        "commit": "0d76bc8f966dbc64c69e310346ae5a4bd492570d",
         "ignore_in_git": True,
         "condition": system in ['linux', 'darwin', 'windows']
     },
@@ -155,7 +196,7 @@ deps = {
     'third_party/zlib': {
         'type': 'git',
         'url': 'https://chromium.googlesource.com/chromium/src/third_party/zlib',
-        'commit': 'f5fd0ad2663e239a31184ad4c9919991dda16f46',
+        'commit': revision.ZLIB,
         "patches": os.path.join(root_dir, 'patches', 'zlib', '*.patch'),
         "ignore_in_git": True,
     },
@@ -167,7 +208,7 @@ deps = {
     },
     'third_party/NativeScript/lib/macOS': {
         "type": "http",
-        "url": "https://github.com/lynx-family/v8-build/releases/download/11.1.277.1/v8_lib_macOS.zip",
+        "url": "https://github.com/lynx-family/v8-build/releases/download/11.1.277.1_abi_compat/v8_lib_macOS.zip",
         "ignore_in_git": True,
         "condition": system in ['darwin']
     },
@@ -199,7 +240,7 @@ deps = {
     'third_party/perfetto': {
         'type': 'git',
         'url': 'https://github.com/lynx-family/lynx-trace.git',
-        'commit': 'e1e87aa784b8deee451a095324b9843c684cbd8e',
+        'commit': revision.PERFETTO,
         "patches": [
               os.path.join(root_dir, 'patches', 'perfetto', '*.patch')
          ],
@@ -209,7 +250,7 @@ deps = {
     "third_party/benchmark": {
         'type': 'git',
         'url': 'https://github.com/google/benchmark.git',
-        'commit': 'f91b6b42b1b9854772a90ae9501464a161707d1e',
+        'commit': revision.BENCHMARK,
         "ignore_in_git": True,
     },
     "third_party/quickjs/src": {
@@ -221,14 +262,14 @@ deps = {
     "third_party/debug_router/src": {
         'type': 'git',
         'url': 'https://github.com/lynx-family/debug-router.git',
-        'commit': 'c7325cdbf95691a4e4c9d4b6f4e5eb2ebb525fa4',
+        'commit': revision.DEBUG_ROUTER,
         "ignore_in_git": True,
         "enable_lfs": False,
     },
     "third_party/boringssl/src":{
         "type": "git",
         "url": "https://github.com/google/boringssl.git",
-        "commit": "71147d3763466094df692df97afef42e4ce26a4f",
+        "commit": revision.BORINGSSL,
         "ignore_in_git": True,
     },
     'third_party/nasm': {
@@ -242,14 +283,14 @@ deps = {
     "third_party/httplib": {
         'type': 'git',
         'url': 'https://github.com/yhirose/cpp-httplib.git',
-        'commit': 'ea850cbfa74e2dff228c49bf94542ce5331d73b5',
+        'commit': revision.HTTP_LIB,
         'patches': os.path.join(root_dir, 'patches', 'httplib', '*.patch'),
         "ignore_in_git": True,
     },
     'third_party/modp_b64': {
         'type': 'git',
         'url': 'https://chromium.googlesource.com/chromium/src/third_party/modp_b64',
-        'commit': '50685101d51ef9aabbd60c94f52d9e026d39c509',
+        'commit': revision.MODP_B64,
         "patches": os.path.join(root_dir, 'patches', 'modp_b64', '*.patch'),
         "ignore_in_git": True,
     },
@@ -275,27 +316,31 @@ deps = {
         "sha256": "f0c52b41f8128da92160f6826b53a105aad31c6c7cdc00b907fde507c5ca09b5",
         "ignore_in_git": True
     },
+    # prepare pnpm / pnpx shim
+    "prepare_pnpm_shim": {
+        "type": "action",
+        "cwd": root_dir,
+        "function": prepare_pnpm_shim,
+        "require": [
+            "buildtools/node",
+            "buildtools/corepack/pnpm/7.33.6",
+        ],
+    },
     # setup corepack and pnpm
     'setup_corepack_pnpm': {
         "type": "action",
         "cwd": root_dir,
         "env": {
-            'NODE_CHANNEL_FD': '1' if not system == 'windows' else '',
-            'COREPACK_HOME': os.path.join(root_dir, 'buildtools', 'corepack'),
+            "NODE_CHANNEL_FD": "1" if not system == "windows" else "",
             # Windows does not have `node/bin` dir
             # And it also use `;` as seperator of PATH
-            'PATH': f"{os.path.join(root_dir, 'buildtools', 'node')};{os.environ.get('PATH')}"
-               if system == "windows"
-               else f"{os.path.join(root_dir, 'buildtools', 'node', 'bin')}:{os.environ.get('PATH')}"
+            "PATH": os.pathsep.join([PNPM_PATH, os.path.dirname(NODE_PATH), os.environ["PATH"]])
         },
         "commands": [
-            "corepack prepare pnpm@7.33.6 --activate",
-            "corepack enable",
             "pnpm install --frozen-lockfile"
         ],
         "require": [
-            "buildtools/node",
-            "buildtools/corepack/pnpm/7.33.6",
+            "prepare_pnpm_shim"
         ],
         "condition": system in ['linux', 'darwin', 'windows']
     },
@@ -331,7 +376,7 @@ deps = {
     "./tools_shared": {
         "type": "git",
         "url": "https://github.com/lynx-family/tools-shared.git",
-        "commit": "2d6bd311f2ad10a3e17ddde395adbc7fc1fffb59",
+        "commit": "bdea62f7b500026aab237b271abc7eff279a5c2d",
         "ignore_in_git": True,
     },
     'buildtools/doxygen': {

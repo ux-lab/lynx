@@ -8,6 +8,7 @@
   "main": "",
   "version": "1.0.0",
   "dependencies": {
+    "liblynx_napi_addon_loader.so": "file:./src/main/cpp/types/liblynx_napi_addon_loader",
     "@lynx/lynx": "@param:dependencies.lynx_version",
     "@lynx/lynx_base": "@param:dependencies.lynx_version",
     "@lynx/lynx_devtool": "@param:dependencies.lynx_version",
@@ -18,6 +19,7 @@
     "@lynx/xelement_markdown": "@param:dependencies.lynx_version",
     "@lynx/xelement_svg": "@param:dependencies.lynx_version",
     "@lynx/xelement_webview": "@param:dependencies.lynx_version",
+    "@lynx/xelement_video": "@param:dependencies.lynx_version",
     "@ohos/imageknifepro": "1.0.9"
   },
   "scripts": {

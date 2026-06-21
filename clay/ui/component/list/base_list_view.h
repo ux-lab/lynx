@@ -85,6 +85,8 @@ class BaseListView : public WithTypeInfo<BaseListView, NestedScrollable>,
 
   void SetWidth(float width) override;
   void SetHeight(float height) override;
+  void SetPaddings(float padding_left, float padding_top, float padding_right,
+                   float padding_bottom) override;
 
   void SetAdapter(ListAdapter* adapter);
   void SetLayoutManager(std::unique_ptr<ListLayoutManager> layout_manager);
@@ -196,6 +198,7 @@ class BaseListView : public WithTypeInfo<BaseListView, NestedScrollable>,
       const std::function<void(uint32_t, const std::string&)>& callback);
 
   ListLayoutManager* GetLayoutManager() const { return layout_manager_.get(); }
+  void OnListItemSizeChanged();
 
   void SetStickyEnabled(bool enabled);
   void OnFocusNodeDestructed(FocusNode*) override;
@@ -214,12 +217,11 @@ class BaseListView : public WithTypeInfo<BaseListView, NestedScrollable>,
   void PrintChildren();
 
 #ifdef ENABLE_ACCESSIBILITY
-  int32_t GetSemanticsActions() const override;
-  int32_t GetSemanticsFlags() const override;
-  int32_t GetA11yScrollChildren() const override;
+  int32_t GetSemanticsActions() const;
+  int32_t GetSemanticsFlags() const;
 #endif
 
-  bool OnScrollToMiddle(BaseView* target_view) override;
+  bool OnScrollToMiddle(BaseView* target_view);
 
   ScrollableDirection GetScrollableDirection() const override;
 

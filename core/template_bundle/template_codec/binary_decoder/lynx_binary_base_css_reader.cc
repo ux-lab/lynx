@@ -12,13 +12,47 @@
 #include <vector>
 
 #include "base/trace/native/trace_event.h"
+#include "core/renderer/css/ng/font_face/font_face_rule.h"
+#include "core/renderer/css/ng/media_query/media_query.h"
 #include "core/renderer/css/ng/media_query/media_query_set.h"
+#include "core/renderer/css/ng/supports/supports_condition.h"
 #include "core/renderer/css/parser/css_parser_configs.h"
 #include "core/runtime/lepus/base_binary_reader.h"
 #include "core/template_bundle/template_codec/binary_decoder/binary_decoder_trace_event_def.h"
 
 namespace lynx {
 namespace tasm {
+namespace {
+
+std::string FormatFontSource(const css::FontSource& source) {
+  std::string result = source.is_local ? "local(" : "url(";
+  result.append(source.uri);
+  result.push_back(')');
+  return result;
+}
+
+std::string FormatFontSources(const std::vector<css::FontSource>& sources) {
+  std::string result;
+  for (const auto& source : sources) {
+    if (!result.empty()) {
+      result.append(", ");
+    }
+    result.append(FormatFontSource(source));
+  }
+  return result;
+}
+
+std::shared_ptr<CSSFontFaceRule> CreateLegacyFontFaceRule(
+    const css::FontFaceRule& rule) {
+  auto token = std::make_shared<CSSFontFaceRule>();
+  token->first = rule.Family();
+  token->second["font-family"] = rule.Family();
+  token->second["src"] = FormatFontSources(rule.Sources());
+  return token;
+}
+
+}  // namespace
+
 // static
 bool LynxBinaryBaseCSSReader::EnableCssVariable(const CompileOptions& options) {
   return Config::IsHigherOrEqual(options.target_sdk_version_,
@@ -148,9 +182,9 @@ bool LynxBinaryBaseCSSReader::DecodeCSSFragment(SharedCSSFragment* fragment,
   fragment->keyframes_.reserve(keyframes_size);
   for (size_t i = 0; i < keyframes_size; ++i) {
     DECODE_STDSTR(name);
-    CSSKeyframesToken* token = new CSSKeyframesToken(parser_config);
-    ERROR_UNLESS(DecodeCSSKeyframesToken(token));
-    fragment->keyframes_.emplace(std::move(name), fml::AdoptRef(token));
+    auto token = fml::MakeRefCounted<CSSKeyframesToken>(parser_config);
+    ERROR_UNLESS(DecodeCSSKeyframesToken(token.get()));
+    fragment->keyframes_.emplace(std::move(name), std::move(token));
   }
   TRACE_EVENT_END(LYNX_TRACE_CATEGORY);
 
@@ -168,14 +202,14 @@ bool LynxBinaryBaseCSSReader::DecodeCSSFragment(SharedCSSFragment* fragment,
           if (enable_css_font_face_extension_) {
             DECODE_COMPACT_U32(token_size);
             for (size_t i = 0; i < token_size; ++i) {
-              CSSFontFaceRule* token = new CSSFontFaceRule();
-              ERROR_UNLESS(DecodeCSSFontFaceToken(token));
-              token_list.emplace_back(token);
+              auto token = std::make_shared<CSSFontFaceRule>();
+              ERROR_UNLESS(DecodeCSSFontFaceToken(token.get()));
+              token_list.emplace_back(std::move(token));
             }
           } else {
-            CSSFontFaceRule* token = new CSSFontFaceRule();
-            ERROR_UNLESS(DecodeCSSFontFaceToken(token));
-            token_list.emplace_back(token);
+            auto token = std::make_shared<CSSFontFaceRule>();
+            ERROR_UNLESS(DecodeCSSFontFaceToken(token.get()));
+            token_list.emplace_back(std::move(token));
           }
           std::string token_key =
               token_list.size() > 0 ? token_list[0]->first : "";
@@ -203,6 +237,10 @@ bool LynxBinaryBaseCSSReader::DecodeCSSRules(SharedCSSFragment* fragment) {
   DECODE_COMPACT_U32(rules_size);
   for (size_t i = 0; i < rules_size; ++i) {
     DECODE_U8(rule_type);
+    // Read the payload length so we can skip unknown rule types.
+    DECODE_U32(payload_size);
+    size_t next_rule_offset = Offset() + payload_size;
+
     switch (static_cast<CSSRuleType>(rule_type)) {
       case CSSRuleType::kStyle:
         ERROR_UNLESS(DecodeCSSStyleRule(fragment, parser_config));
@@ -218,11 +256,17 @@ bool LynxBinaryBaseCSSReader::DecodeCSSRules(SharedCSSFragment* fragment) {
       case CSSRuleType::kFontFace:
         ERROR_UNLESS(DecodeCSSFontFaceRule(fragment));
         break;
+      case CSSRuleType::kLayerBlock:
+      case CSSRuleType::kLayerStatement:
+        ERROR_UNLESS(DecodeCSSLayerRule(fragment, parser_config, rule_type));
+        break;
       default:
-        // Fail fast on unsupported rule types
-        ERROR_UNLESS(false);
         break;
     }
+    // Align to the next rule boundary regardless of how much data the
+    // individual decoder consumed.
+    ERROR_UNLESS(Offset() <= next_rule_offset);
+    Seek(static_cast<uint32_t>(next_rule_offset));
   }
   return true;
 }
@@ -262,20 +306,49 @@ bool LynxBinaryBaseCSSReader::DecodeCSSStyleRule(
 bool LynxBinaryBaseCSSReader::DecodeCSSConditionRule(
     SharedCSSFragment* fragment, const CSSParserConfigs& parser_config,
     uint8_t rule_type) {
+  fml::RefPtr<css::ConditionRule> condition_rule;
+  ERROR_UNLESS(DecodeConditionRuleData(fragment, parser_config, rule_type,
+                                       &condition_rule));
+  fragment->AddConditionRule(std::move(condition_rule));
+  return true;
+}
+
+bool LynxBinaryBaseCSSReader::DecodeConditionRuleData(
+    SharedCSSFragment* fragment, const CSSParserConfigs& parser_config,
+    uint8_t rule_type, fml::RefPtr<css::ConditionRule>* out_rule) {
   std::string condition;
   fml::RefPtr<const css::MediaQuerySet> media_queries;
+  fml::RefPtr<const css::SupportsConditionNode> supports_condition;
   if (rule_type == static_cast<uint8_t>(CSSRuleType::kMedia)) {
     DECODE_VALUE(media_value);
     media_queries = css::MediaQuerySet::FromLepus(media_value);
+    if (!media_queries) {
+      auto query_set = fml::MakeRefCounted<css::MediaQuerySet>();
+      query_set->Append(fml::MakeRefCounted<css::MediaQuery>(
+          css::MediaQueryRestrictor::kNot,
+          std::string(css::MediaQuery::kTypeAll), nullptr));
+      media_queries = std::move(query_set);
+    }
+  } else if (rule_type == static_cast<uint8_t>(CSSRuleType::kSupports)) {
+    DECODE_VALUE(supports_value);
+    supports_condition = css::SupportsConditionNode::FromLepus(supports_value);
+    if (!supports_condition) {
+      supports_condition =
+          fml::MakeRefCounted<css::SupportsGeneralEnclosedNode>(std::string());
+    }
   } else {
-    ERROR_UNLESS(DecodeUtf8Str(&condition));
+    return false;
   }
   DECODE_COMPACT_U32(child_count);
-  auto condition_rule =
-      fml::MakeRefCounted<css::ConditionRule>(std::move(condition), fragment);
+  auto condition_rule = fml::MakeRefCounted<css::ConditionRule>(fragment);
   condition_rule->SetMediaQueries(std::move(media_queries));
+  condition_rule->SetSupportsCondition(std::move(supports_condition));
   for (size_t i = 0; i < child_count; ++i) {
     DECODE_U8(child_type);
+    // Read the payload length so we can skip unknown child rule types.
+    DECODE_U32(child_payload_size);
+    size_t next_child_offset = Offset() + child_payload_size;
+
     switch (static_cast<CSSRuleType>(child_type)) {
       case CSSRuleType::kStyle: {
         fml::RefPtr<css::StyleRule> rule;
@@ -285,42 +358,147 @@ bool LynxBinaryBaseCSSReader::DecodeCSSConditionRule(
         }
         break;
       }
+      case CSSRuleType::kKeyframes: {
+        base::String name;
+        fml::RefPtr<CSSKeyframesToken> token;
+        ERROR_UNLESS(DecodeKeyframesRuleData(parser_config, &name, &token));
+        break;
+      }
+      case CSSRuleType::kFontFace: {
+        std::string family;
+        std::vector<std::shared_ptr<CSSFontFaceRule>> token_list;
+        ERROR_UNLESS(DecodeFontFaceRuleData(&family, &token_list));
+        break;
+      }
       default:
         break;
     }
+    ERROR_UNLESS(Offset() <= next_child_offset);
+    Seek(static_cast<uint32_t>(next_child_offset));
   }
-  if (rule_type == static_cast<uint8_t>(CSSRuleType::kMedia)) {
-    fragment->AddConditionRule(std::move(condition_rule));
-  }
+  *out_rule = std::move(condition_rule);
   return true;
 }
 
 bool LynxBinaryBaseCSSReader::DecodeCSSKeyframesRule(
     SharedCSSFragment* fragment, const CSSParserConfigs& parser_config) {
+  base::String name;
+  fml::RefPtr<CSSKeyframesToken> token;
+  ERROR_UNLESS(DecodeKeyframesRuleData(parser_config, &name, &token));
+  fragment->keyframes_.emplace(std::move(name), std::move(token));
+  return true;
+}
+
+bool LynxBinaryBaseCSSReader::DecodeKeyframesRuleData(
+    const CSSParserConfigs& parser_config, base::String* out_name,
+    fml::RefPtr<CSSKeyframesToken>* out_token) {
   DECODE_STDSTR(name);
-  CSSKeyframesToken* token = new CSSKeyframesToken(parser_config);
-  ERROR_UNLESS(DecodeCSSKeyframesToken(token));
-  fragment->keyframes_.emplace(base::String(name), fml::AdoptRef(token));
+  auto token = fml::MakeRefCounted<CSSKeyframesToken>(parser_config);
+  ERROR_UNLESS(DecodeCSSKeyframesToken(token.get()));
+  *out_name = base::String(std::move(name));
+  *out_token = std::move(token);
   return true;
 }
 
 bool LynxBinaryBaseCSSReader::DecodeCSSFontFaceRule(
     SharedCSSFragment* fragment) {
-  DECODE_STDSTR(family);
+  std::string family;
   std::vector<std::shared_ptr<CSSFontFaceRule>> token_list;
-  if (enable_css_font_face_extension_) {
-    DECODE_COMPACT_U32(token_size);
-    for (size_t i = 0; i < token_size; ++i) {
-      CSSFontFaceRule* token = new CSSFontFaceRule();
-      ERROR_UNLESS(DecodeCSSFontFaceToken(token));
-      token_list.emplace_back(token);
-    }
-  } else {
-    CSSFontFaceRule* token = new CSSFontFaceRule();
-    ERROR_UNLESS(DecodeCSSFontFaceToken(token));
-    token_list.emplace_back(token);
+  ERROR_UNLESS(DecodeFontFaceRuleData(&family, &token_list));
+  auto& rules = fragment->fontfaces_[family];
+  for (auto& token : token_list) {
+    rules.emplace_back(std::move(token));
   }
-  fragment->fontfaces_.emplace(std::move(family), std::move(token_list));
+  return true;
+}
+
+bool LynxBinaryBaseCSSReader::DecodeFontFaceRuleData(
+    std::string* out_family,
+    std::vector<std::shared_ptr<CSSFontFaceRule>>* out_tokens) {
+  DECODE_VALUE(font_face_value);
+  auto font_face_rule = css::FontFaceRule::FromLepus(font_face_value);
+  if (!font_face_rule) {
+    return false;
+  }
+
+  auto token = CreateLegacyFontFaceRule(*font_face_rule);
+  if (token->first.empty()) {
+    return false;
+  }
+  *out_family = token->first;
+  out_tokens->clear();
+  out_tokens->emplace_back(std::move(token));
+  return true;
+}
+
+bool LynxBinaryBaseCSSReader::DecodeCSSLayerRule(
+    SharedCSSFragment* fragment, const CSSParserConfigs& parser_config,
+    uint8_t rule_type) {
+  // Wire format (the leading rule-type byte and payload-length u32 were
+  // already consumed by the outer switch in DecodeCSSRules):
+  //   - name_segment_count : compact u32
+  //   - N x utf8 str       : name segments (e.g. "framework"."theme")
+  //   - layer_position     : compact u32  (parser document-order index, NOT
+  //                                        cascade priority)
+  //   - if kLayerBlock:
+  //       child_count      : compact u32
+  //       N x { type byte + payload_size u32 + child payload }
+  //
+  DECODE_COMPACT_U32(name_segment_count);
+  for (size_t i = 0; i < name_segment_count; ++i) {
+    DECODE_STDSTR(segment);
+    (void)segment;
+  }
+  DECODE_COMPACT_U32(layer_position);
+  (void)layer_position;
+
+  if (rule_type != static_cast<uint8_t>(CSSRuleType::kLayerBlock)) {
+    // Statement form has no children.
+    return true;
+  }
+
+  DECODE_COMPACT_U32(child_count);
+  for (size_t i = 0; i < child_count; ++i) {
+    DECODE_U8(child_type);
+    // Read the payload length so we can skip unknown child rule types.
+    DECODE_U32(child_payload_size);
+    size_t next_child_offset = Offset() + child_payload_size;
+
+    switch (static_cast<CSSRuleType>(child_type)) {
+      case CSSRuleType::kStyle: {
+        fml::RefPtr<css::StyleRule> rule;
+        ERROR_UNLESS(DecodeStyleRuleData(fragment, parser_config, &rule));
+        break;
+      }
+      case CSSRuleType::kMedia:
+      case CSSRuleType::kSupports: {
+        fml::RefPtr<css::ConditionRule> condition_rule;
+        ERROR_UNLESS(DecodeConditionRuleData(fragment, parser_config,
+                                             child_type, &condition_rule));
+        break;
+      }
+      case CSSRuleType::kKeyframes: {
+        base::String name;
+        fml::RefPtr<CSSKeyframesToken> token;
+        ERROR_UNLESS(DecodeKeyframesRuleData(parser_config, &name, &token));
+        break;
+      }
+      case CSSRuleType::kFontFace: {
+        std::string family;
+        std::vector<std::shared_ptr<CSSFontFaceRule>> token_list;
+        ERROR_UNLESS(DecodeFontFaceRuleData(&family, &token_list));
+        break;
+      }
+      case CSSRuleType::kLayerBlock:
+      case CSSRuleType::kLayerStatement:
+        ERROR_UNLESS(DecodeCSSLayerRule(fragment, parser_config, child_type));
+        break;
+      default:
+        break;
+    }
+    ERROR_UNLESS(Offset() <= next_child_offset);
+    Seek(static_cast<uint32_t>(next_child_offset));
+  }
   return true;
 }
 

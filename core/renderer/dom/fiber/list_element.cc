@@ -43,6 +43,20 @@ void SetTemplateCallbackAttribute(lepus::Value* target,
   target->CopyWeakValue(value);
 }
 
+bool IsAsyncListBatchRenderStrategy(list::BatchRenderStrategy strategy) {
+  return strategy == list::BatchRenderStrategy::kAsyncResolveProperty ||
+         strategy ==
+             list::BatchRenderStrategy::kAsyncResolvePropertyAndElementTree;
+}
+
+list::BatchRenderStrategy NormalizeBatchRenderStrategyForNewStylingPipeline(
+    list::BatchRenderStrategy strategy, bool enable_new_styling_pipeline) {
+  if (enable_new_styling_pipeline && IsAsyncListBatchRenderStrategy(strategy)) {
+    return list::BatchRenderStrategy::kBatchRender;
+  }
+  return strategy;
+}
+
 }  // namespace
 
 ListElement::ListElement(ElementManager* manager, const base::String& tag,
@@ -61,7 +75,8 @@ ListElement::ListElement(ElementManager* manager, const base::String& tag,
   batch_render_strategy_ =
       ResolveBatchRenderStrategyFromPipelineSchedulerConfig(
           manager->GetConfig()->GetPipelineSchedulerConfig(),
-          manager->GetEnableParallelElement());
+          manager->GetEnableParallelElement(),
+          manager->EnableNewStylingPipeline());
 }
 
 ListNode* ListElement::GetListNode() {
@@ -243,7 +258,10 @@ int32_t ListElement::ComponentAtIndex(uint32_t index, int64_t operationId,
 
   lepus::Value value = tasm_->CallLepusMethod(component_at_index_, args);
 
-  return static_cast<int32_t>(value.Number());
+  return element_manager_ != nullptr
+             ? element_manager_->ResolveTemplateElementRootIdForList(
+                   static_cast<int32_t>(value.Number()))
+             : static_cast<int32_t>(value.Number());
 }
 
 void ListElement::ComponentAtIndexes(
@@ -298,9 +316,13 @@ void ListElement::EnqueueComponent(int32_t sign) {
   if (!enqueue_component_.IsCallable()) {
     return;
   }
+  auto resolved_sign =
+      element_manager_ != nullptr
+          ? element_manager_->ResolveTemplateElementShellIdForList(sign)
+          : sign;
   std::vector<lepus::Value> args = {
       lepus::Value(fml::RefPtr<ListElement>(this)), lepus::Value(impl_id()),
-      lepus::Value(sign)};
+      lepus::Value(resolved_sign)};
   tasm_->CallLepusMethod(enqueue_component_, args);
 }
 
@@ -360,7 +382,8 @@ void ListElement::NotifyListReuseNode(const fml::RefPtr<FiberElement>& child,
 }
 
 void ListElement::ResolveEnableNativeList() {
-  // The priority is: shell(Case1) > property(Case2) > page config(Case3).
+  // The priority is: shell(Case1) > property(Case2) > config(Case3) >
+  // env(Case4).
   if (element_manager_->GetEnableNativeListFromShell()) {
     // Case 1. Resolve enable native list from shell.
     disable_list_platform_implementation_ = true;
@@ -375,14 +398,30 @@ void ListElement::ResolveEnableNativeList() {
     return;
   }
   // Case 3: Not set "custom-list-name" property, we get enable native list from
-  // page config.
-  disable_list_platform_implementation_ =
-      element_manager_->GetEnableNativeListFromPageConfig();
+  // PageConfig. PageConfig may already contain the native config fallback and
+  // still preserves the undefined state.
+  const auto& config = element_manager_->GetConfig();
+  const auto enable_native_list_from_config =
+      config ? config->GetEnableNativeList() : TernaryBool::UNDEFINE_VALUE;
+  if (enable_native_list_from_config != TernaryBool::UNDEFINE_VALUE) {
+    disable_list_platform_implementation_ =
+        enable_native_list_from_config == TernaryBool::TRUE_VALUE;
+    return;
+  }
+  // Case 4: If use FiberArch and get true from env, we use native list.
+  bool enable_native_list_from_env =
+      element_manager_->GetEnableNativeListFromEnv();
+  if (IsFiberArch() && enable_native_list_from_env) {
+    disable_list_platform_implementation_ = true;
+    enable_native_list_only_from_env_ = true;
+  } else {
+    disable_list_platform_implementation_ = false;
+  }
 }
 
 void ListElement::ResolvePlatformNodeTag() {
   // When resolve platform node tag, we no need to consider whether enable
-  // native list except the case that using page config.
+  // native list except the case that using config or env fallback.
 
   // Case 1: Resolve "custom-list-name" property.
   const auto& attr_map = updated_attr_map();
@@ -391,9 +430,13 @@ void ListElement::ResolvePlatformNodeTag() {
     platform_node_tag_ = it->second.String();
     return;
   }
-  // Case 2: If get enable native list from page config, we modify
+  // Case 2: If get enable native list from config or env fallback, we modify
   // platform_node_tag_ to "list-container".
-  if (element_manager_->GetEnableNativeListFromPageConfig()) {
+  const auto& config = element_manager_->GetConfig();
+  const auto enable_native_list_from_config =
+      config ? config->GetEnableNativeList() : TernaryBool::UNDEFINE_VALUE;
+  if (enable_native_list_from_config == TernaryBool::TRUE_VALUE ||
+      enable_native_list_only_from_env_) {
     platform_node_tag_ = BASE_STATIC_STRING(list::kListContainer);
   }
 }
@@ -426,11 +469,18 @@ ParallelFlushReturn ListElement::PrepareForCreateOrUpdate() {
     // Report feature count.
     HandleDelayTask([platform_node_tag = platform_node_tag_,
                      disable_list_platform_implementation =
-                         *disable_list_platform_implementation_]() {
+                         *disable_list_platform_implementation_,
+                     enable_native_list_only_from_env =
+                         enable_native_list_only_from_env_]() {
       // add feature count for cpp list
       if (disable_list_platform_implementation) {
         tasm::report::FeatureCounter::Instance()->Count(
             tasm::report::LynxFeature::CPP_ENABLE_NATIVE_LIST);
+      }
+      // add feature count for native list enabled by env fallback
+      if (enable_native_list_only_from_env) {
+        tasm::report::FeatureCounter::Instance()->Count(
+            tasm::report::LynxFeature::CPP_ENABLE_NATIVE_LIST_FROM_ENV);
       }
       // add feature count for custom-list-name
       if (platform_node_tag.IsEqual(BASE_STATIC_STRING(list::kListContainer))) {
@@ -455,6 +505,10 @@ ParallelFlushReturn ListElement::PrepareForCreateOrUpdate() {
       // constructor can get PhysicalPixelsPerLayoutUnit from element manager.
       if (*enable_decoupled_list_) {
         list_mediator_ = std::make_unique<ListMediator>(this);
+        // Note: if enable native list only from env, we should not send scroll
+        // to threshold event on diff layout to avoid breaking change.
+        list_mediator_->SetEnableScrollToThresholdEventOnDiffLayout(
+            !enable_native_list_only_from_env_);
       } else {
         list_container_delegate_internal_ =
             list::CreateListContainerDelegateInternal(this);
@@ -482,6 +536,11 @@ ParallelFlushReturn ListElement::PrepareForCreateOrUpdate() {
         }
       }
     }
+    // New styling serializes or uses level-order traversal instead of the old
+    // async list-item resolve path. Keep batch render, but disable async
+    // property/tree resolve so layout node creation stays ordered with inserts.
+    batch_render_strategy_ = NormalizeBatchRenderStrategyForNewStylingPipeline(
+        batch_render_strategy_, element_manager()->EnableNewStylingPipeline());
     // Flush to platform ui and list container once time.
     bool enable_batch_render =
         batch_render_strategy_ > list::BatchRenderStrategy::kDefault;
@@ -569,6 +628,10 @@ void ListElement::SetListOrientation(
 }
 
 void ListElement::ResetAttribute(const base::String& key) {
+  if (key.IsEqual(lynx::list::kPropFiberUpdateListInfo)) {
+    return;
+  }
+
   FiberElement::ResetAttribute(key);
 
   if (key.IsEquals(kScrollOrientation) || key.IsEquals(kVerticalOrientation)) {
@@ -707,6 +770,15 @@ void ListElement::ResetEventHandlers() {
 
 bool ListElement::ResolveStyleValue(CSSPropertyID id, const CSSValue& value) {
   bool ret = Element::ResolveStyleValue(id, value);
+  ResolveListAxisGapStyle(id);
+  return ret;
+}
+
+void ListElement::ReplayElementSpecificStyleSideEffect(CSSPropertyID id) {
+  ResolveListAxisGapStyle(id);
+}
+
+void ListElement::ResolveListAxisGapStyle(CSSPropertyID id) {
   switch (id) {
     case CSSPropertyID::kPropertyIDListMainAxisGap: {
       float main_axis_gap =
@@ -731,7 +803,6 @@ bool ListElement::ResolveStyleValue(CSSPropertyID id, const CSSValue& value) {
     default:
       break;
   }
-  return ret;
 }
 
 void ListElement::SetupFragmentBehavior(Fragment* fragment) {
@@ -746,7 +817,8 @@ void ListElement::AttachToElementManager(
   batch_render_strategy_ =
       ResolveBatchRenderStrategyFromPipelineSchedulerConfig(
           manager->GetConfig()->GetPipelineSchedulerConfig(),
-          manager->GetEnableParallelElement());
+          manager->GetEnableParallelElement(),
+          manager->EnableNewStylingPipeline());
   if (UseDecoupledList()) {
     list_mediator_->OnAttachToElementManager();
   } else if (UseInternalList()) {
@@ -840,7 +912,8 @@ void ListElementSSRHelper::OnEnqueueComponent(int32_t sign) {
 
 list::BatchRenderStrategy
 ListElement::ResolveBatchRenderStrategyFromPipelineSchedulerConfig(
-    uint64_t pipeline_scheduler_config, bool enable_parallel_element) {
+    uint64_t pipeline_scheduler_config, bool enable_parallel_element,
+    bool enable_new_styling_pipeline) {
   bool enable_batch_render =
       (pipeline_scheduler_config & kEnableListBatchRenderMask) > 0;
   bool enable_batch_render_async_resolve_property =
@@ -863,11 +936,15 @@ ListElement::ResolveBatchRenderStrategyFromPipelineSchedulerConfig(
 
   if (enable_batch_render_async_resolve_tree &&
       enable_batch_render_async_resolve_property) {
-    return list::BatchRenderStrategy::kAsyncResolvePropertyAndElementTree;
+    return NormalizeBatchRenderStrategyForNewStylingPipeline(
+        list::BatchRenderStrategy::kAsyncResolvePropertyAndElementTree,
+        enable_new_styling_pipeline);
   }
 
   if (enable_batch_render_async_resolve_property) {
-    return list::BatchRenderStrategy::kAsyncResolveProperty;
+    return NormalizeBatchRenderStrategyForNewStylingPipeline(
+        list::BatchRenderStrategy::kAsyncResolveProperty,
+        enable_new_styling_pipeline);
   }
 
   return list::BatchRenderStrategy::kBatchRender;

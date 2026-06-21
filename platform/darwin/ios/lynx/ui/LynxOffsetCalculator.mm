@@ -3,6 +3,7 @@
 // LICENSE file in the root directory of this source tree.
 #import "LynxOffsetCalculator.h"
 #import <Lynx/LynxLog.h>
+#import <math.h>
 #import "LynxLRUMap.h"
 
 @implementation PathLengthCache
@@ -60,17 +61,13 @@ static CGPoint getLineTangent(CGPoint start, CGPoint end) {
   return CGPointMake(end.x - start.x, end.y - start.y);
 }
 
-// Calculate the Angle between the vector and the positive Y-axis.
-static CGFloat angleWithPositiveYAxis(CGPoint vector) {
-  CGPoint yAxis = CGPointMake(0, 1);
-  CGFloat dotProduct = vector.x * yAxis.x + vector.y * yAxis.y;
-  CGFloat magnitudeProduct = hypot(vector.x, vector.y) * hypot(yAxis.x, yAxis.y);
-  CGFloat cosTheta = dotProduct / magnitudeProduct;
-  CGFloat angle = acos(cosTheta);
-  if (vector.x < 0) {
-    angle = 2 * M_PI - angle;
+// Calculate the angle between the vector and the positive X-axis.
+static CGFloat angleWithPositiveXAxis(CGPoint vector) {
+  if (vector.x == 0 && vector.y == 0) {
+    return 0;
   }
-  return angle;
+  CGFloat angle = atan2(vector.y, vector.x);
+  return angle < 0 ? angle + 2 * M_PI : angle;
 }
 
 // Calculate the length of the quadratic Bezier curve.
@@ -182,6 +179,7 @@ static void calculatePathLengthFunction(void *info, const CGPathElement *element
       points[0] = element->points[0];
       pathInfo->currentPoint.x = points[0].x;
       pathInfo->currentPoint.y = points[0].y;
+      pathInfo->startPoint = points[0];
       break;
 
     case kCGPathElementAddLineToPoint:
@@ -237,6 +235,7 @@ static void findTargetPoint(void *info, const CGPathElement *element) {
     case kCGPathElementMoveToPoint:
       points[0] = element->points[0];
       pathInfo->currentPoint = points[0];
+      pathInfo->startPoint = points[0];
       break;
 
     case kCGPathElementAddLineToPoint:
@@ -246,7 +245,11 @@ static void findTargetPoint(void *info, const CGPathElement *element) {
       // Uses the cached segment length.
       CGFloat segmentLength = [cache.segmentLengths[pathInfo->currentSegmentIndex] doubleValue];
 
-      if (pathInfo->totalLength + segmentLength >= pathInfo->targetLength) {
+      if (!isfinite(segmentLength) || segmentLength <= 0) {
+        segmentLength = 0;
+      }
+
+      if (segmentLength > 0 && pathInfo->totalLength + segmentLength >= pathInfo->targetLength) {
         CGFloat remainingLength = pathInfo->targetLength - pathInfo->totalLength;
         CGFloat ratio = remainingLength / segmentLength;
 
@@ -367,7 +370,7 @@ static void findTargetPoint(void *info, const CGPathElement *element) {
 
   CGPathApply(path, &info, findTargetPoint);
   if (tangent != nullptr) {
-    *tangent = angleWithPositiveYAxis(info.resultPointTangent);
+    *tangent = angleWithPositiveXAxis(info.resultPointTangent);
   }
   return info.resultPoint;
 }

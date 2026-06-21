@@ -40,8 +40,11 @@ import com.lynx.tasm.utils.UIThreadUtils;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 class IntValueIndex {
   public static final int LEFT = 0;
@@ -87,6 +90,8 @@ class CreateViewAsyncStatus {
 
 public final class PaintingContext implements IPaintingContext {
   private static final String TAG = "lynx_PaintingContext";
+  private static final int STICKY_INFO_COUNT = 10;
+  private static final long UI_THREAD_QUERY_TIMEOUT_MS = 1000;
 
   private final LynxUIOwner mUIOwner;
   private TextLayout mTextLayout;
@@ -173,6 +178,18 @@ public final class PaintingContext implements IPaintingContext {
       return;
     }
     LynxFrameRecorder.inst().recordInvoke(getInstanceId(), sign, method, params, context, callback);
+  }
+
+  @CalledByNative
+  private void recordInitialTreeForReplay(int[] signs, String[] tagNames, Object[] bundles,
+      Object[] initialStyles, boolean[] isFlattens, int[] nodeIndexes, int[] parentSigns,
+      int[] childIndexes, float[] layouts, boolean[] hasBounds, boolean[] hasSticky) {
+    if (!isRecordingEnabled()) {
+      return;
+    }
+    LynxFrameRecorder.inst().recordInitialTree(getInstanceId(), signs, tagNames, bundles,
+        initialStyles, isFlattens, nodeIndexes, parentSigns, childIndexes, layouts, hasBounds,
+        hasSticky);
   }
 
   // this func will be execed on main thread.
@@ -719,6 +736,10 @@ public final class PaintingContext implements IPaintingContext {
 
   @CalledByNative
   public float[] getRectToLynxView(int sign) {
+    return runOnUiThreadForFloatArray(sign, false);
+  }
+
+  private float[] getRectToLynxViewOnUiThread(int sign) {
     float[] res = new float[] {0, 0, 0, 0};
     LynxBaseUI ui = mUIOwner.getNode(sign);
     if (ui != null) {
@@ -729,6 +750,57 @@ public final class PaintingContext implements IPaintingContext {
       res[3] = re.height();
     }
     return res;
+  }
+
+  @CalledByNative
+  private float[] getRectToScreen(int sign) {
+    return runOnUiThreadForFloatArray(sign, true);
+  }
+
+  private float[] getRectToScreenOnUiThread(int sign) {
+    float[] res = new float[] {0, 0, 0, 0};
+    LynxBaseUI ui = mUIOwner.getNode(sign);
+    if (ui != null) {
+      // TODO(songshourui.null): Align this with transform-aware AABB semantics
+      // by reusing LynxUIHelper.convertRectFromUIToScreen / four-corner mapping.
+      float[] point = new float[] {0, 0};
+      ui.getLocationOnScreen(point);
+      float left = point[0];
+      float top = point[1];
+      point[0] = ui.getWidth();
+      point[1] = ui.getHeight();
+      ui.getLocationOnScreen(point);
+      res[0] = left;
+      res[1] = top;
+      res[2] = point[0] - left;
+      res[3] = point[1] - top;
+    }
+    return res;
+  }
+
+  private float[] runOnUiThreadForFloatArray(int sign, boolean toScreen) {
+    if (UIThreadUtils.isOnUiThread()) {
+      return toScreen ? getRectToScreenOnUiThread(sign) : getRectToLynxViewOnUiThread(sign);
+    }
+    final float[] fallback = toScreen ? new float[] {0, 0, -1, -1} : new float[] {0, 0, 0, 0};
+    AtomicReference<float[]> result = new AtomicReference<>(fallback);
+    CountDownLatch latch = new CountDownLatch(1);
+    UIThreadUtils.postAtFrontOfQueueOnUiThread(() -> {
+      try {
+        result.set(toScreen ? getRectToScreenOnUiThread(sign) : getRectToLynxViewOnUiThread(sign));
+      } finally {
+        latch.countDown();
+      }
+    });
+    try {
+      if (!latch.await(UI_THREAD_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+        return fallback;
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return fallback;
+    }
+    return result.get();
   }
 
   @CalledByNative
@@ -824,8 +896,8 @@ public final class PaintingContext implements IPaintingContext {
       float[] sticky = null;
       if (ints[i * size + IntValueIndex.HAS_STICKY] != 0) {
         // sticky != null, get value from stickies
-        sticky = new float[] {stickies[sIndex * 4], stickies[sIndex * 4 + 1],
-            stickies[sIndex * 4 + 2], stickies[sIndex * 4 + 3]};
+        sticky = new float[STICKY_INFO_COUNT];
+        System.arraycopy(stickies, sIndex * STICKY_INFO_COUNT, sticky, 0, STICKY_INFO_COUNT);
         sIndex++;
       }
       setLayoutData(signs[i], ints[i * size + IntValueIndex.LEFT],

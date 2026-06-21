@@ -5,6 +5,7 @@
 #ifndef CORE_PUBLIC_PAINTING_CTX_PLATFORM_IMPL_H_
 #define CORE_PUBLIC_PAINTING_CTX_PLATFORM_IMPL_H_
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -77,7 +78,33 @@ class PaintingCtxPlatformRef {
 };
 
 struct PaintingCtxPlatformImplConfig {
-  bool enable_native_schedule_create_view_async;
+  bool enable_native_schedule_create_view_async{false};
+  bool enable_new_sticky{false};
+};
+
+struct InitialLynxUITreeNodeForReplay {
+  int id = 0;
+  std::string tag;
+  fml::RefPtr<PropBundle> painting_data;
+  bool flatten = false;
+  uint32_t node_index = 0;
+
+  bool has_parent = false;
+  int parent = 0;
+  int index = 0;
+
+  float x = 0.0f;
+  float y = 0.0f;
+  float width = 0.0f;
+  float height = 0.0f;
+  std::array<float, 4> paddings = {};
+  std::array<float, 4> margins = {};
+  std::array<float, 4> borders = {};
+  std::array<float, 4> bounds = {};
+  bool has_bounds = false;
+  std::array<float, 4> sticky = {};
+  bool has_sticky = false;
+  float max_height = 0.0f;
 };
 
 class PaintingCtxPlatformImpl {
@@ -117,6 +144,8 @@ class PaintingCtxPlatformImpl {
                             const float* margins, const float* borders,
                             const float* bounds, const float* sticky,
                             float max_height, uint32_t node_index) = 0;
+  virtual void RecordInitialLynxUITreeForReplay(
+      std::vector<InitialLynxUITreeNodeForReplay> nodes) {}
   virtual void UpdatePlatformExtraBundle(int32_t id,
                                          PlatformExtraBundle* bundle) {}
 
@@ -167,7 +196,20 @@ class PaintingCtxPlatformImpl {
   virtual void InvokeUIMethod(int32_t view_id, const std::string& method,
                               fml::RefPtr<tasm::PropBundle> args,
                               int32_t callback_id) {}
+  // Legacy root-origin query. Prefer GetRectToLynxView or GetRectToScreen for
+  // new code that needs an explicit coordinate space.
   virtual void getAbsolutePosition(int id, float* position) {}
+  // Synchronously writes the node border-box rect in screen coordinates as
+  // [x, y, width, height].
+  virtual void GetRectToScreen(int id, float* rect) {
+    if (rect == nullptr) {
+      return;
+    }
+    rect[0] = 0.f;
+    rect[1] = 0.f;
+    rect[2] = -1.f;
+    rect[3] = -1.f;
+  }
 
   virtual void EnableUIOperationBatching(){};
 

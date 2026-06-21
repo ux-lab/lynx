@@ -21,6 +21,7 @@ public class BackgroundManager extends LynxBackground {
   private WeakReference<LynxUI> mUI;
   private TransformProps mTransformProps;
   private PointF mPostTranslate = null;
+  private PointF mMotionPathPostTranslate = null;
   private float mTranslateZ;
   private boolean mEnableTransformOrder = true;
 
@@ -79,8 +80,13 @@ public class BackgroundManager extends LynxBackground {
     updateViewTranslation();
   }
 
-  public void setPostTranlate(PointF tranlate) {
-    mPostTranslate = tranlate;
+  public void setPostTranslate(PointF translate) {
+    mPostTranslate = translate;
+    updateViewTranslation();
+  }
+
+  public void setMotionPathPostTranslate(PointF translate) {
+    mMotionPathPostTranslate = translate;
     updateViewTranslation();
   }
 
@@ -183,6 +189,10 @@ public class BackgroundManager extends LynxBackground {
     if (mPostTranslate != null) {
       x += mPostTranslate.x;
       y += mPostTranslate.y;
+    }
+    if (mMotionPathPostTranslate != null) {
+      x += mMotionPathPostTranslate.x;
+      y += mMotionPathPostTranslate.y;
     }
     if (mTransformProps != null) {
       x += mTransformProps.getTranslationX();

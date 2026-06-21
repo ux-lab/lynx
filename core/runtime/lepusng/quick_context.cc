@@ -18,6 +18,7 @@
 #include "core/renderer/utils/lynx_env.h"
 #include "core/renderer/utils/value_utils.h"
 #include "core/runtime/common/js_error_reporter.h"
+#include "core/runtime/js/runtime_constant.h"
 #include "core/runtime/lepus/exception.h"
 #include "core/runtime/lepus/js_object.h"
 #include "core/runtime/lepus/lepus_error_helper.h"
@@ -580,7 +581,7 @@ QuickContext::~QuickContext() {
 }
 
 void QuickContext::OnGC(std::string mem_info) {
-  OnContextGC(std::move(mem_info));
+  OnContextGC({{lynx::runtime::kRawRuntimeMemoryInfo, std::move(mem_info)}});
 }
 
 void QuickContext::Initialize() {
@@ -681,6 +682,10 @@ bool QuickContext::ExecuteBinaryInternal(Value* ret_val) {
     LEPUS_FreeValue(context(), ret);
   }
   return true;
+}
+
+std::string QuickContext::GetDebugDescription() const {
+  return std::string("quickjs(") + (LEPUS_IsGCModeRT(runtime_) ? "gc)" : "rc)");
 }
 
 void QuickContext::TriggerVmGC() {

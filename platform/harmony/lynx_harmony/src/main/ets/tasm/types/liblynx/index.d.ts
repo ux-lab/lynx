@@ -10,6 +10,10 @@ export const initGlobalEnv: (resourceManager: Object) => void;
 
 export const registerImageService: (instance: number[]) => void;
 
+export const setEmojiResourceFetcher: (fetcher: Object) => void;
+
+export const preloadCommonEmojiResources: () => void;
+
 export const getBaseTraceBackend: () => number;
 
 export const setTracingDirPath: (tracingDirPath: string) => void;
@@ -181,6 +185,8 @@ export class LynxTemplateRenderer {
 
   updateFontScale(scale: number): void;
 
+  updateColorScheme(scheme: number): void;
+
   nativeSetEnableBytecode(enableBytecode: boolean, sourceUrl: string): void;
 
   getPageDataByKey(keys: string[]): Object;
@@ -204,6 +210,16 @@ export class LynxTemplateRenderer {
   nativeSubscribeSessionStorage(key: string, callback: Function): number;
 
   nativeUnsubscribeSessionStorage(key: string, listenerId: number): void;
+
+  /**
+   * Obtains the root LynxElement.
+   */
+  nativeGetLynxElementRoot(callback: (result: number) => void): void;
+
+  nativeLynxElementToJSONString(
+    sign: number,
+    callback: (result: string | null) => void
+  ): void;
 
   invokeLepusCallback(id: number, entryName: string, args: Object): void;
 }

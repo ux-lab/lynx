@@ -6,6 +6,7 @@
 #import <Lynx/LynxBackgroundRuntime+Internal.h>
 #import <Lynx/LynxContext+Internal.h>
 #import <Lynx/LynxDebugger+Internal.h>
+#import <Lynx/LynxElement.h>
 #import <Lynx/LynxEnv+Internal.h>
 #import <Lynx/LynxError.h>
 #import <Lynx/LynxEventReporter.h>
@@ -52,11 +53,12 @@
 #import "LynxUIIntersectionObserver+Internal.h"
 #import "LynxUILayoutTick.h"
 #import "LynxUIMethodModule.h"
-#import "LynxUIRendererProtocol.h"
 #import "LynxViewGroup+Internal.h"
 #import "PaintingContextProxy.h"
 
 #include <functional>
+#include <memory>
+#include <utility>
 
 #include "base/include/debug/backtrace.h"
 #include "core/base/darwin/lynx_env_darwin.h"
@@ -69,12 +71,14 @@
 #include "core/renderer/ui_wrapper/layout/ios/layout_context_darwin.h"
 #include "core/renderer/ui_wrapper/painting/ios/native_painting_context_platform_darwin_ref.h"
 #include "core/renderer/ui_wrapper/painting/ios/painting_context_darwin.h"
+#include "core/renderer/utils/base/base_def.h"
 #include "core/renderer/utils/darwin/event_converter_darwin.h"
 #include "core/resource/lazy_bundle/lazy_bundle_loader.h"
 #include "core/resource/lynx_resource_loader_darwin.h"
 #include "core/runtime/lepus/json_parser.h"
 #include "core/services/performance/darwin/performance_controller_darwin.h"
 #include "core/services/timing_handler/timing_constants.h"
+#include "core/shell/common/platform_call_back.h"
 #include "core/shell/ios/data_utils.h"
 #include "core/shell/ios/lynx_layout_proxy_darwin.h"
 #include "core/shell/ios/native_facade_darwin.h"
@@ -82,6 +86,53 @@
 #include "core/shell/lynx_shell_builder.h"
 #include "core/shell/runtime/common/module_delegate_impl.h"
 #include "core/value_wrapper/darwin/value_impl_darwin.h"
+
+#if defined(LynxElement)
+#pragma push_macro("LynxElement")
+#undef LynxElement
+#define LYNX_RESTORE_LYNX_ELEMENT_EXTENSION 1
+#endif
+
+@interface LynxElement ()
+
+- (instancetype)initWithTemplateRender:(LynxTemplateRender*)templateRender
+                                  sign:(int32_t)sign NS_DESIGNATED_INITIALIZER;
+
+@end
+
+#if defined(LYNX_RESTORE_LYNX_ELEMENT_EXTENSION)
+#pragma pop_macro("LynxElement")
+#undef LYNX_RESTORE_LYNX_ELEMENT_EXTENSION
+#endif
+
+@interface LynxTemplateRender (MemoryUsage)
+
+// Registers this template render as an internal memory usage fetcher after the instance identity is
+// ready. Registration is idempotent because the registry keys by object identity.
+- (void)registerMemoryUsageFetcherIfNeeded;
+
+// Removes the internal memory usage fetcher by object identity. This method is safe to call
+// repeatedly during teardown.
+- (void)unregisterMemoryUsageFetcherIfNeeded;
+
+@end
+
+namespace {
+
+void InvokeLynxElementJSONStringCallback(void (^_Nonnull callback)(NSString* _Nullable),
+                                         std::string json) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSString* result = nil;
+    if (!json.empty()) {
+      result = [[NSString alloc] initWithBytes:json.data()
+                                        length:json.size()
+                                      encoding:NSUTF8StringEncoding];
+    }
+    callback(result);
+  });
+}
+
+}  // namespace
 
 @implementation LynxTemplateRender
 
@@ -174,6 +225,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
     /// Timing
     _initEndTiming = [[NSDate date] timeIntervalSince1970] * 1000 * 1000;
     [self setUpTiming];
+    [self registerMemoryUsageFetcherIfNeeded];
   }
 
   // Destruction of Runtime inside wrapper will be handled by LynxShell. Since after
@@ -244,6 +296,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
   _fetcher = builder.fetcher;
   _hasStartedLoad = NO;
   _fontScale = builder.fontScale;
+  _colorScheme = builder.colorScheme;
 
   _threadStrategyForRendering = builder.getThreadStrategyForRender;
   _enableLayoutSafepoint = builder.enableLayoutSafepoint;
@@ -358,6 +411,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
 #pragma mark - Clean & Reuse
 
 - (void)reset {
+  [self unregisterMemoryUsageFetcherIfNeeded];
   if (_delegate) {
     __weak LynxTemplateRender* weakSelf = self;
     [LynxTemplateRender runOnMainThread:^() {
@@ -394,6 +448,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
   }
 
   [self reset:lastInstanceId];
+  [self registerMemoryUsageFetcherIfNeeded];
   // Update info
   [self updateNativeTheme];
   [self updateNativeGlobalProps];
@@ -403,6 +458,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
 }
 
 - (void)detachLynxEngine {
+  [self unregisterMemoryUsageFetcherIfNeeded];
   _lynxEngine = nil;
 }
 
@@ -415,6 +471,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
 
 // TODO(huangweiwu): maybe we need remove this method..
 - (void)clearForDestroy {
+  [self unregisterMemoryUsageFetcherIfNeeded];
   [_lynxUIRenderer reset];
   [_lynxViewGroup
       destroyForInstance:[NSString
@@ -425,6 +482,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
 }
 
 - (void)dealloc {
+  [self unregisterMemoryUsageFetcherIfNeeded];
   if (_lynxEngine == nil) {
     [_lynxUIRenderer reset];
     [_shadowNodeOwner destroySelf];
@@ -1459,6 +1517,13 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
   shell_->UpdateFontScale(scale);
 }
 
+- (void)updateColorScheme:(LynxColorScheme)scheme {
+  if (shell_->IsDestroyed()) {
+    return;
+  }
+  shell_->UpdateColorScheme(static_cast<int>(scheme));
+}
+
 - (void)pauseRootLayoutAnimation {
   [_lynxUIRenderer pauseRootLayoutAnimation];
 }
@@ -1567,6 +1632,56 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
 
 - (nullable UIView*)viewWithName:(nonnull NSString*)name {
   return [_lynxUIRenderer viewWithName:name];
+}
+
+- (void)getLynxElementRoot:(void (^_Nonnull)(LynxElement* _Nullable element))callback {
+  if (callback == nil) {
+    return;
+  }
+  void (^callbackCopy)(LynxElement* _Nullable) = [callback copy];
+  if (shell_ == nullptr || shell_->IsDestroyed()) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      callbackCopy(nil);
+    });
+    return;
+  }
+  __weak LynxTemplateRender* weakSelf = self;
+  shell_->GetLynxElementRootSignAsync(std::make_unique<lynx::shell::PlatformCallBack>(
+      [weakSelf, callbackCopy](const lynx::lepus::Value& value) mutable {
+        int32_t sign = lynx::tasm::kInvalidImplId;
+        if (value.IsNumber()) {
+          sign = static_cast<int32_t>(value.Number());
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+          LynxTemplateRender* templateRender = weakSelf;
+          LynxElement* element = templateRender != nil && sign != lynx::tasm::kInvalidImplId
+                                     ? [[LynxElement alloc] initWithTemplateRender:templateRender
+                                                                              sign:sign]
+                                     : nil;
+          callbackCopy(element);
+        });
+      }));
+}
+
+- (void)lynxElementToJSONStringWithSign:(int32_t)sign
+                               callback:(void (^_Nonnull)(NSString* _Nullable json))callback {
+  if (callback == nil) {
+    return;
+  }
+  void (^callbackCopy)(NSString* _Nullable) = [callback copy];
+  if (shell_ == nullptr || shell_->IsDestroyed() || sign == lynx::tasm::kInvalidImplId) {
+    InvokeLynxElementJSONStringCallback(callbackCopy, "");
+    return;
+  }
+  shell_->GetLynxElementTreeAsJSONStringAsync(
+      sign, std::make_unique<lynx::shell::PlatformCallBack>(
+                [callbackCopy](const lynx::lepus::Value& value) mutable {
+                  std::string json;
+                  if (value.IsString()) {
+                    json = value.StdString();
+                  }
+                  InvokeLynxElementJSONStringCallback(callbackCopy, std::move(json));
+                }));
 }
 
 #pragma mark - Module
@@ -1926,6 +2041,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
     }];
 
     [LynxEventReporter clearCacheForInstanceId:_context.instanceId];
+    [self unregisterMemoryUsageFetcherIfNeeded];
     _context.instanceId = kUnknownInstanceId;
     shell_->Destroy();
     if (onError) {
@@ -2611,6 +2727,7 @@ LYNX_NOT_IMPLEMENTED(-(instancetype)initWithCoder : (NSCoder*)aDecoder)
   return ^(LynxViewBuilder* builder) {
     builder.config = self->_config;
     builder.fontScale = self->_fontScale;
+    builder.colorScheme = self->_colorScheme;
     builder.enablePreUpdateData = YES;
     builder.enableMultiAsyncThread = self->_builder.enableMultiAsyncThread;
     builder.fetcher = self->_fetcher;

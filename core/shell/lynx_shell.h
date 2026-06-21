@@ -14,9 +14,10 @@
 #include <vector>
 
 #include "base/include/lynx_actor.h"
+#include "base/include/memory/memory_pressure_level.h"
+#include "base/include/notification_center.h"
 #include "base/include/value/base_value.h"
 #include "core/base/lynx_export.h"
-#include "core/base/memory/memory_pressure_callback.h"
 #include "core/base/threading/task_runner_manufactor.h"
 #include "core/base/threading/vsync_monitor.h"
 #include "core/inspector/observer/inspector_runtime_observer_ng.h"
@@ -197,6 +198,8 @@ class LynxShell {
 
   void UpdateFontScale(float scale);
 
+  void UpdateColorScheme(int scheme);
+
   void SetFontScale(float scale);
 
   void SetPlatformConfig(std::string platform_config_json_string);
@@ -279,6 +282,12 @@ class LynxShell {
 
   // TODO(heshan):will be deleted, pass when ReportError
   std::unordered_map<std::string, std::string> GetAllJsSource();
+
+  void GetLynxElementRootSignAsync(
+      std::unique_ptr<shell::PlatformCallBack> callback);
+
+  void GetLynxElementTreeAsJSONStringAsync(
+      int32_t sign, std::unique_ptr<shell::PlatformCallBack> callback);
 
   // TODO(huangweiwu): Delete this after adding a delegate for the devtool.
   LYNX_EXPORT_FOR_DEVTOOL tasm::TemplateAssembler* GetTasm();
@@ -422,8 +431,7 @@ class LynxShell {
 
   std::shared_ptr<LynxActor<LynxEngine>> engine_actor_;  // on TASM runner
 
-  std::unique_ptr<::lynx::base::MemoryPressureCallback>
-      memory_pressure_callback_;
+  std::unique_ptr<base::NotificationCallback> memory_pressure_callback_;
 
   std::shared_ptr<ListEngineProxy> list_engine_proxy_;
 

@@ -1,4 +1,13 @@
 # CHANGELOG
+# 0.0.44
+* enhance lepus ir passes with module-level immutability analysis to eliminate more redundant loads, branches, and movs
+
+# 0.0.43
+* fix incorrect assignment elimination under optional chaining when IR optimization is enabled 
+
+# 0.0.42
+* fix lepus crash when multiple closures capture a reassigned toplevel variable
+
 # 0.0.41
 * fix lepus bytecode optimization register overflow and add debug prints when Lepus bytecode optimization flag is set
 

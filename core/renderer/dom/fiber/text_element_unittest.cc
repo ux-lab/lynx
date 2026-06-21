@@ -310,6 +310,38 @@ TEST_P(TextElementTest, TestResolveStyleValue) {
   EXPECT_EQ(text->computed_css_style()->GetTextAttributes()->color, 4278190080);
 }
 
+TEST_P(TextElementTest, ResetTextMaxlineClearsLayoutInElementProp) {
+  auto config = std::make_shared<PageConfig>();
+  config->SetEnableFiberArch(true);
+  manager->SetConfig(config);
+  manager->page_options_.embedded_mode_ = static_cast<EmbeddedMode>(
+      static_cast<int32_t>(manager->page_options_.embedded_mode_) |
+      static_cast<int32_t>(EmbeddedMode::LAYOUT_IN_ELEMENT));
+
+  auto page = manager->CreateFiberPage("page", 11);
+
+  auto text = manager->CreateFiberText("text");
+
+  auto raw_text = manager->CreateFiberRawText();
+  raw_text->SetText(lepus::Value("text-content"));
+
+  page->InsertNode(text);
+  text->InsertNode(raw_text);
+
+  text->SetAttribute("text-maxline", lepus::Value(1));
+
+  page->FlushActionsAsRoot();
+  ASSERT_NE(text->text_props_, nullptr);
+  ASSERT_TRUE(text->text_props_->text_max_line.has_value());
+  EXPECT_EQ(*text->text_props_->text_max_line, 1);
+
+  text->ResetAttribute("text-maxline");
+  text->FlushActionsAsRoot();
+
+  ASSERT_NE(text->text_props_, nullptr);
+  EXPECT_FALSE(text->text_props_->text_max_line.has_value());
+}
+
 TEST_P(TextElementTest, TestMeasureCase0) {
   if (enable_parallel_element_flush_strategy > 0) {
     GTEST_SKIP();
@@ -644,6 +676,69 @@ TEST_P(TextElementTest, LayoutInElementWrapperTestCase0) {
   EXPECT_EQ(std::get<int>(mock_text_prop_array[7]), -65536);
 
   // key4: {kPropTextString: "text-content"}
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[8]), kPropTextString);
+  EXPECT_EQ(std::get<std::string>(mock_text_prop_array[9]), "text-content");
+}
+
+TEST_P(TextElementTest, NewStylingLayoutInElementTextStylesReachTextMeasurer) {
+  if (enable_parallel_element_flush_strategy > 0) {
+    GTEST_SKIP();
+  }
+  auto config = std::make_shared<PageConfig>();
+  config->SetEnableFiberArch(true);
+  manager->SetConfig(config);
+  manager->enable_new_styling_pipeline_ = true;
+  manager->page_options_.embedded_mode_ = static_cast<EmbeddedMode>(
+      static_cast<int32_t>(manager->page_options_.embedded_mode_) |
+      static_cast<int32_t>(EmbeddedMode::LAYOUT_IN_ELEMENT));
+  manager->OnUpdateViewport(720, 1, 1080, 1, true);
+
+  tasm->layout_scheduler_ = std::make_unique<LayoutScheduler>(manager);
+
+  auto page = manager->CreateFiberPage("page", 11);
+  auto text = manager->CreateFiberText("text");
+  auto inline_text = manager->CreateFiberText("text");
+  inline_text->SetRawInlineStyles(
+      base::String("font-size:26px;font-weight:500"));
+
+  auto raw_text = manager->CreateFiberRawText();
+  auto content = lepus::Value("text-content");
+  raw_text->SetText(content);
+
+  page->InsertNode(text);
+  text->InsertNode(inline_text);
+  inline_text->InsertNode(raw_text);
+
+  auto options = std::make_shared<PipelineOptions>();
+  manager->OnPatchFinish(options, page.get());
+
+  auto painting_context = static_cast<FiberMockPaintingContext*>(
+      manager->painting_context()->impl());
+  painting_context->Flush();
+
+  ASSERT_TRUE(inline_text->property_bits_.Has(kPropertyIDFontSize));
+  ASSERT_TRUE(inline_text->property_bits_.Has(kPropertyIDFontWeight));
+
+  auto* mock_text_layout =
+      static_cast<TextLayoutMock*>((painting_context->text_layout_impl_).get());
+  auto& mock_text_prop_array =
+      mock_text_layout->text_layout_results_.at(text->impl_id()).get()->props_;
+  ASSERT_EQ(mock_text_prop_array.size(), 10u);
+
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[0]), kPropInlineStart);
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[1]), 0);
+
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[2]), kTextPropFontSize);
+  EXPECT_EQ(std::get<double>(mock_text_prop_array[3]), 26.0);
+
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[4]), kTextPropFontWeight);
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[5]),
+            static_cast<int>(starlight::FontWeightType::k500));
+
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[6]), kPropInlineEnd);
+  EXPECT_EQ(std::get<int>(mock_text_prop_array[7]),
+            raw_text->content_utf16_length_);
+
   EXPECT_EQ(std::get<int>(mock_text_prop_array[8]), kPropTextString);
   EXPECT_EQ(std::get<std::string>(mock_text_prop_array[9]), "text-content");
 }

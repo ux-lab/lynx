@@ -6,7 +6,6 @@ set -e
 root_dir=$(pwd)/../../../../
 root_dir=$(readlink -f $root_dir)
 echo "root_dir: $root_dir"
-command="pod install --verbose --repo-update"
 project_name="LynxExplorer.xcodeproj"
 enable_trace=true
 
@@ -74,7 +73,7 @@ build_card_resources
 pushd $root_dir
 gn_root_dir=$(readlink -f $root_dir)
 echo "gn_root_dir: $gn_root_dir"
-generate_ios_podspec_cmd="python3 tools/ios_tools/generate_podspec_scripts_by_gn.py --root $gn_root_dir $enable_trace_param"
+generate_ios_podspec_cmd="python3 tools/ios_tools/generate_podspec_scripts_by_gn.py --root $gn_root_dir $enable_trace_param --enable-autosync-version"
 echo $generate_ios_podspec_cmd
 eval "$generate_ios_podspec_cmd"
 popd
@@ -82,7 +81,6 @@ popd
 # prepare source cache
 export COCOAPODS_CONVERT_GIT_TO_HTTP=false
 export LANG=en_US.UTF-8
-SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk bundle install -V --path="$root_dir"
-bundle exec pod deintegrate "$project_name"
+pod deintegrate "$project_name"
 rm -rf Podfile.lock
-COCOAPODS_LOCAL_SOURCE_REPO=$source_cache_dir/.git bundle exec "$command"
+COCOAPODS_LOCAL_SOURCE_REPO=$source_cache_dir/.git pod install --repo-update

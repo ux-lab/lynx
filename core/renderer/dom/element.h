@@ -18,6 +18,7 @@
 
 #include "base/include/auto_create_optional.h"
 #include "base/include/closure.h"
+#include "base/include/flex_optional.h"
 #include "base/include/fml/memory/ref_ptr.h"
 #include "base/include/no_destructor.h"
 #include "base/include/value/ref_type.h"
@@ -266,6 +267,7 @@ class Element : public lepus::RefCounted,
 
   std::vector<float> ScrollBy(float width, float height);
   std::vector<float> GetRectToLynxView();
+  std::vector<float> GetRectToScreen();
   void Invoke(const std::string& method, const pub::Value& params,
               const std::function<void(int32_t code, const pub::Value& data)>&
                   callback);
@@ -536,6 +538,10 @@ class Element : public lepus::RefCounted,
   virtual int ParentComponentId() const { return 0; }
   virtual std::string ParentComponentIdString() const;
   virtual const std::string& ParentComponentEntryName() const;
+  const base::String& entry_name() const { return element_entry_name_; }
+  void set_entry_name(const base::String& entry_name) {
+    element_entry_name_ = entry_name;
+  }
 
   inline bool IsLayoutOnly() { return is_layout_only_; }
   // Check if this element is a fixed element using the new fixed positioning
@@ -814,6 +820,7 @@ class Element : public lepus::RefCounted,
   bool EnableTriggerGlobalEvent() const { return trigger_global_event_; }
 
   void PreparePropBundleIfNeed();
+  fml::RefPtr<PropBundle> GetPropBundleForRecording();
 
   bool GetEnableZIndex();
 
@@ -911,8 +918,10 @@ class Element : public lepus::RefCounted,
   // APIs related to Sticky
   inline bool is_sticky() { return is_sticky_; }
   inline void set_is_sticky(bool is_sticky) { is_sticky_ = is_sticky; }
-  inline const std::array<float, 4>& sticky_positions() const {
-    return *sticky_positions_;
+
+  inline const base::auto_create_optional<std::array<float, 10>>&
+  sticky_positions() const {
+    return sticky_positions_;
   }
 
   // Check has_value() before usage to avoid unintentional construction.
@@ -996,6 +1005,7 @@ class Element : public lepus::RefCounted,
 
   void SetDataToNativeKeyframeAnimator(bool from_resume = false);
   void SetDataToNativeTransitionAnimator();
+  bool ShouldUseLegacyTransitionInterception() const;
 
   bool ShouldConsumeTransitionStylesInAdvance();
   bool ConsumeTransitionStylesInAdvance(const StyleMap& styles,
@@ -1088,6 +1098,10 @@ class Element : public lepus::RefCounted,
 
   virtual void RequestNextFrame() = 0;
 
+  void SetAnimationSampleTimeForNewPipeline(const fml::TimePoint& sample_time);
+  base::flex_optional<fml::TimePoint> TakeAnimationSampleTimeForNewPipeline();
+  void DispatchAnimationEventsForNewPipeline(
+      const animation::AnimationEventRecordsForNewPipeline& event_records);
   void UpdateFinalStyleMap(const StyleMap& styles);
 
   virtual void OnPatchFinish(std::shared_ptr<PipelineOptions>& option);
@@ -1430,6 +1444,7 @@ class Element : public lepus::RefCounted,
       bool keep_element_id);
 
   virtual void PushStyleToBundle();
+  void PushCurrentPropsToBundleForRecording(PropBundle* bundle);
 
   void RequireFlush();
 
@@ -1453,6 +1468,7 @@ class Element : public lepus::RefCounted,
   void ReplayImperativeAnimationsToStyle(
       starlight::ComputedCSSStyle& computed_style) const;
   CSSIDBitset TakePendingImperativeAnimationCleanupProperties();
+  bool HasPendingImperativeAnimationCleanupProperties() const;
   bool HasImperativeAnimations() const;
   void ApplyImperativeAnimationMutation(
       const ImperativeAnimationState::Mutation& mutation);
@@ -1582,11 +1598,15 @@ class Element : public lepus::RefCounted,
   float height_{0};
   float top_{0};
   float left_{0};
-  // left, top, right, bottom
   std::array<float, 4> borders_{};
   std::array<float, 4> margins_{};
   std::array<float, 4> paddings_{};
-  base::auto_create_optional<std::array<float, 4>> sticky_positions_;
+  // Sticky payload:
+  // info[0-3]: left, top, right, bottom
+  // info[4-5]: parent width, parent height
+  // info[6-7]: self left/top relative to scroller
+  // info[8-9]: parent left/top relative to scroller.
+  base::auto_create_optional<std::array<float, 10>> sticky_positions_;
   float max_height_{starlight::DefaultLayoutStyle::kDefaultMaxSize};
 
   float record_parent_font_size_ = -1;
@@ -1615,6 +1635,7 @@ class Element : public lepus::RefCounted,
   // for animation
   std::unique_ptr<animation::CSSKeyframeManager> css_keyframe_manager_;
   std::unique_ptr<animation::CSSTransitionManager> css_transition_manager_;
+  base::flex_optional<fml::TimePoint> animation_sample_time_for_new_pipeline_;
   // Saves the css style that the all animation applied to the element.
   base::auto_create_optional<StyleMap> final_animator_map_;
   // Save the keyframes of the Animate API.
@@ -1629,6 +1650,10 @@ class Element : public lepus::RefCounted,
   // Using to record some previous element styles which New Animator needs.
   base::LinearFlatMap<tasm::CSSPropertyID, CSSValue> animation_previous_styles_;
 
+  // Tracks the previous underlying target values for transition-relevant
+  // layout-only properties in the new styling pipeline.
+  base::auto_create_optional<StyleMap>
+      committed_underlying_layout_only_styles_for_new_pipeline_;
   // Used to record all layout-related styles of the element only when we
   // enable dump element tree. In the copied element, we will use these styles
   // to initialize the layout node.
@@ -1668,6 +1693,7 @@ class Element : public lepus::RefCounted,
   base::Vector<base::closure> pending_invoke_tasks_;
 
   int32_t css_id_{kInvalidCssId};
+  base::String element_entry_name_;
 
   DynamicCSSStylesManager::StyleUpdateFlags dynamic_style_flags_{0};
 
@@ -1752,6 +1778,8 @@ class Element : public lepus::RefCounted,
   bool WriteRenderStyleToBundle(tasm::CSSPropertyID id,
                                 const tasm::CSSValue& value);
   void DispatchBundleToPaintingNode(fml::RefPtr<PropBundle> bundle);
+
+  void UpdateStickyPosition(const std::array<float, 4>* sticky_positions);
 
   CSSKeyframesToken* GetSimpleStyleKeyframesToken(
       const base::String& animation_name);

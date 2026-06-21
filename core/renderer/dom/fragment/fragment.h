@@ -151,6 +151,7 @@ class Fragment : public BaseElementContainer {
   void DrawClip(DisplayListBuilder& display_list_builder);
 
   void DrawBackground(DisplayListBuilder& display_list_builder);
+  void DrawBoxShadow(DisplayListBuilder& display_list_builder);
   void DrawTransform(DisplayListBuilder& display_list_builder);
   void DrawOpacity(DisplayListBuilder& display_list_builder);
 
@@ -201,11 +202,16 @@ class Fragment : public BaseElementContainer {
 
   PlatformEventPropMap event_props_;
   base::Vector<PlatformEventName> event_names_;
+  bool event_bundle_dirty_{false};
 
   float render_offset_[2] = {0, 0};
 
   int32_t draw_node_capacity_{0};
 };
+
+// Computes the outset-adjusted border radius for box-shadow spread
+// interpolation per W3C CSS Backgrounds and Borders Module Level 3.
+float ComputeOutsetAdjustedRadius(float radius, float spread, float coverage);
 
 }  // namespace tasm
 }  // namespace lynx

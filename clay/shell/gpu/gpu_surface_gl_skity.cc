@@ -50,11 +50,10 @@ GPUSurfaceGLSkity::GPUSurfaceGLSkity(
   }
 
   valid_ = gpu_context_ != nullptr;
-#if defined(OS_WIN)
   if (valid_) {
     gpu_context_->SetEnableSimpleShapePipeline(true);
+    gpu_context_->EnableRenderTargetCache(false);
   }
-#endif
 }
 
 GPUSurfaceGLSkity::~GPUSurfaceGLSkity() {

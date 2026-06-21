@@ -21,6 +21,13 @@ namespace tasm {
 
 class ElementContainer : public BaseElementContainer {
  public:
+  struct PlatformLayout {
+    float left = 0.f;
+    float top = 0.f;
+    float child_offset_left = 0.f;
+    float child_offset_top = 0.f;
+  };
+
   explicit ElementContainer(Element* element);
   ~ElementContainer() override;
 
@@ -46,6 +53,8 @@ class ElementContainer : public BaseElementContainer {
 
   void UpdateLayout(float left, float top,
                     bool transition_view = false) override;
+  PlatformLayout CalculatePlatformLayout(float left, float top) const;
+  PlatformLayout CalculateCurrentPlatformLayout() const;
   void UpdateLayoutWithoutChange() override;
 
   void TransitionToNativeView(fml::RefPtr<PropBundle> prop_bundle) override;
@@ -72,6 +81,7 @@ class ElementContainer : public BaseElementContainer {
 
   void ZIndexChanged();
   void PositionFixedChanged();
+  void StickyChanged();
 
   void AttachChildToTargetContainerRecursive(ElementContainer* parent,
                                              Element* child, int& index);
@@ -97,7 +107,7 @@ class ElementContainer : public BaseElementContainer {
   int ZIndex() const;
   void SetNeedUpdate(bool update) { need_update_ = update; }
 
-  bool IsSticky();
+  bool IsSticky() const;
 
   // children with zIndex<0, negative zIndex child will be re-inserted to the
   // beginning after onPatchFinish
@@ -110,7 +120,6 @@ class ElementContainer : public BaseElementContainer {
   int32_t none_layout_only_children_size_{0};
 
   bool need_update_{true};
-
   // indicate the ElementContainer has finished first layout
   bool is_layouted_{false};
   // true if the Element's props has changed during this patch
@@ -120,6 +129,8 @@ class ElementContainer : public BaseElementContainer {
   void CalcUIIndexForFixed(ElementContainer* child, int& index);
   void CalcUIIndexForFixedNew(ElementContainer* child, int& index);
   void CalcUIIndexForFixedUnified(ElementContainer* child, int& index);
+  bool ShouldUpdateStickyRange();
+  const float* GetStickyPositionIfNeeded();
 };
 
 }  // namespace tasm

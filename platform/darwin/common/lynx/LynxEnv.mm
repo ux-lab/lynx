@@ -12,6 +12,7 @@
 #import <Lynx/LynxEnv+Internal.h>
 #import <Lynx/LynxEnvKey.h>
 #import <Lynx/LynxError.h>
+#import <Lynx/LynxEventReporter.h>
 #import <Lynx/LynxLazyRegister.h>
 #import <Lynx/LynxLifecycleDispatcher.h>
 #import <Lynx/LynxService.h>
@@ -33,10 +34,11 @@
 #import "LynxBytecodeResponseBlock+Converter.h"
 
 #include "base/include/fml/synchronization/shared_mutex.h"
+#include "base/include/memory/memory_pressure_level.h"
+#include "base/include/notification_center.h"
 #include "base/trace/native/trace_event.h"
 #include "core/base/darwin/lynx_env_darwin.h"
 #include "core/base/lynx_trace_categories.h"
-#include "core/base/memory/memory_pressure_callback.h"
 #include "core/renderer/css/computed_css_style.h"
 #include "core/renderer/tasm/config.h"
 #include "core/renderer/utils/devtool_lifecycle.h"
@@ -54,6 +56,10 @@
 #import <Lynx/LynxUIKitAPIAdapter.h>
 #import <UIKit/UIKit.h>
 #endif
+
+@interface DevToolSettings (LynxEnvBacktraceInternal)
++ (NSString *)buildBacktraceAddressSummary;
+@end
 
 @interface LynxEnv ()
 
@@ -175,6 +181,16 @@
 // this function is garuanteed to be called after first initialization.
 - (void)setLynxDebugEnabled:(BOOL)lynxDebugEnabled {
   if (lynxDebugEnabled) {
+    // Intentionally report this event on iOS only.
+#if OS_IOS
+    NSString *traceString = [DevToolSettings buildBacktraceAddressSummary];
+    [LynxEventReporter onEvent:@"lynxsdk_enable_lynx_debug_event"
+                    instanceId:-1
+                  propsBuilder:^NSDictionary * {
+                    return @{@"backtrace" : traceString};
+                  }];
+#endif
+
     lynx::tasm::DevToolLifecycle::GetInstance().OnEnabled();
     [self initDevToolEnv];
   } else {
@@ -819,9 +835,10 @@
     case LynxMemoryPressureLevelNone:
     default:
       level = lynx::base::MemoryPressureLevel::MEMORY_PRESSURE_LEVEL_NONE;
-      break;
+      return;
   }
-  lynx::base::MemoryPressureCallback::NotifyMemoryPressure(level);
+  lynx::base::NotificationCallback::Notify(lynx::base::MEMORY_PRESSURE_NOTIFICATION,
+                                           static_cast<intptr_t>(level));
 }
 
 @end

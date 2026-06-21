@@ -152,12 +152,20 @@ TEST_F(LEPUSIRTestEnhancedOpts, LoadNullEliminationHoistToDominator) {
 
   builder.SetInsertionPointToStart(b);
   auto* t1 = builder.GetLiteralInt8(1);
-  builder.Create<LoadNullOrUndefinedInst>(0, t1);
+  auto* ln1 = builder.Create<LoadNullOrUndefinedInst>(0, t1);
+  // Add a non-terminator use so b is not a sole-LoadNull trampoline block.
+  builder.Create<BinaryOperatorInst>(0, ln1, builder.GetLiteralInt32(0),
+                                     ValueKind::BinaryAddInstKind,
+                                     TypeOp::CreateAnyType(&builder));
   builder.Create<BranchInst>(0, join);
 
   builder.SetInsertionPointToStart(c);
   auto* t2 = builder.GetLiteralInt8(1);
-  builder.Create<LoadNullOrUndefinedInst>(0, t2);
+  auto* ln2 = builder.Create<LoadNullOrUndefinedInst>(0, t2);
+  // Add a non-terminator use so c is not a sole-LoadNull trampoline block.
+  builder.Create<BinaryOperatorInst>(0, ln2, builder.GetLiteralInt32(0),
+                                     ValueKind::BinaryAddInstKind,
+                                     TypeOp::CreateAnyType(&builder));
   builder.Create<BranchInst>(0, join);
 
   builder.SetInsertionPointToStart(join);
@@ -361,6 +369,69 @@ TEST_F(LEPUSIRTestEnhancedOpts,
   }
   EXPECT_EQ(type0_count, 1);
   EXPECT_EQ(type1_count, 1);
+}
+
+TEST_F(LEPUSIRTestEnhancedOpts, LoadNullEliminationMergesTrampolineBlocks) {
+  OpBuilder builder;
+  builder.SetModuleOp(mod);
+  builder.SetInsertionPointToEnd(mod->GetFunctionBlock());
+
+  std::string name = "test_load_null_merges_trampolines";
+  auto* func = builder.Create<FuncOp>(0, name);
+  func->Init(lepus_func);
+
+  // CFG: entry -> {nil_bb, get_bb} -> merge
+  // nil_bb is a trampoline (sole LoadNull + Branch). Since
+  // LoadNullEliminationPass now runs after InstCombine has consumed all
+  // optional-chaining patterns, it is free to merge the trampoline's load.
+  Block* entry =
+      builder.CreateBlock(func->GetSingleRegion(), BlockType::BT_INST, {});
+  Block* nil_bb =
+      builder.CreateBlock(func->GetSingleRegion(), BlockType::BT_INST, {});
+  Block* get_bb =
+      builder.CreateBlock(func->GetSingleRegion(), BlockType::BT_INST, {});
+  Block* merge =
+      builder.CreateBlock(func->GetSingleRegion(), BlockType::BT_INST, {});
+
+  builder.SetInsertionPointToStart(entry);
+  auto* cond = builder.GetLiteralBool(true);
+  builder.Create<CondBranchInst>(0, cond, nil_bb, get_bb);
+
+  // nil_bb: sole LoadNull + Branch (trampoline pattern).
+  builder.SetInsertionPointToStart(nil_bb);
+  auto* t = builder.GetLiteralInt8(1);
+  auto* nil_load = builder.Create<LoadNullOrUndefinedInst>(0, t);
+  builder.Create<BranchInst>(0, merge);
+
+  // get_bb: also has a LoadNull (same type) so merging is possible.
+  builder.SetInsertionPointToStart(get_bb);
+  auto* ln_other = builder.Create<LoadNullOrUndefinedInst>(0, t);
+  builder.Create<BinaryOperatorInst>(0, ln_other, builder.GetLiteralInt32(0),
+                                     ValueKind::BinaryAddInstKind,
+                                     TypeOp::CreateAnyType(&builder));
+  builder.Create<BranchInst>(0, merge);
+
+  // merge: Phi uses nil_load from nil_bb.
+  builder.SetInsertionPointToStart(merge);
+  PhiInst::ValueListType phi_vals{nil_load, ln_other};
+  PhiInst::BlockListType phi_blocks{nil_bb, get_bb};
+  builder.Create<PhiInst>(0, phi_vals, phi_blocks);
+  builder.Create<ReturnInst>(0, builder.GetLiteralInt32(0));
+
+  LoadNullEliminationPass pass(ir_ctx.get());
+  // The pass should merge both LoadNull instructions (trampoline is no longer
+  // protected since the pass runs after InstCombine in the pipeline).
+  EXPECT_TRUE(pass.RunOnFunction(func));
+
+  // Verify that both original loads were replaced (neither should have users
+  // pointing to them as the canonical instruction is now in entry).
+  bool found_canonical_in_entry = false;
+  for (auto* inst : entry->InstRange()) {
+    if (llvh::isa<LoadNullOrUndefinedInst>(inst)) {
+      found_canonical_in_entry = true;
+    }
+  }
+  EXPECT_TRUE(found_canonical_in_entry);
 }
 
 }  // namespace ir

@@ -619,6 +619,7 @@ public class LynxBaseConfigurator : NSObject {
   public BOOL LynxBaseConfigurator::enableAsyncHydration enableAsyncHydration;
   public BOOL LynxBaseConfigurator::enableMTSModule enableMTSModule;
   public CGFloat LynxBaseConfigurator::fontScale fontScale;
+  public LynxColorScheme LynxBaseConfigurator::colorScheme colorScheme;
   public LynxBooleanOption LynxBaseConfigurator::enableGenericResourceFetcher enableGenericResourceFetcher;
   public id<LynxGenericResourceFetcher> LynxBaseConfigurator::genericResourceFetcher genericResourceFetcher;
   public id<LynxMediaResourceFetcher> LynxBaseConfigurator::mediaResourceFetcher mediaResourceFetcher;
@@ -1389,6 +1390,12 @@ public protocol LynxDynamicComponentFetcher-p : <NSObject> {
   public void LynxDynamicComponentFetcher-p::loadDynamicComponent:withLoadedBlock:(NSString *url,[withLoadedBlock] onComponentLoaded block);
 }
 
+public class LynxElement : NSObject {
+  public instancetype LynxElement::NS_UNAVAILABLE();
+  public void LynxElement::toJSONString:(void(^_Nonnull callback)(NSString *_Nullable json));
+  public instancetype LynxElement::NS_UNAVAILABLE();
+}
+
 public class LynxEmbeddedModule : NSObject, <LynxContextModule> {
   public instancetype LynxEmbeddedModule::initWithLynxContext:(LynxContext *context);
   public instancetype LynxEmbeddedModule::initWithLynxContext:WithParam:(LynxContext *context,[WithParam] id param);
@@ -1669,6 +1676,7 @@ public class LynxEventHandler : NSObject {
   public id< LynxEventTarget > LynxEventHandler()::hitTestInner:withEvent:(CGPoint point, [withEvent] nullable UIEvent *event);
   public NSInteger LynxEventHandler()::checkCanRespondTapOrClick:withSet:(id< LynxEventTarget > ui, [withSet] NSSet *set);
   public void LynxEventHandler()::removeEventGestures();
+  public void LynxEventHandler()::markDispatchInCurrentLynxPageOnlyIfNeeded:(LynxTouchEvent *event);
 }
 
 public protocol LynxEventObserver-p :  {
@@ -2061,6 +2069,21 @@ public class LynxGestureVelocityTracker : NSObject {
   public CGPoint LynxGestureVelocityTracker::velocityInView:(nullable UIView *view);
 }
 
+public class LynxGlobalMemoryUsageCollectionContext : NSObject {
+  public uint64_t LynxGlobalMemoryUsageCollectionContext::collectionId collectionId;
+  public int64_t LynxGlobalMemoryUsageCollectionContext::collectionStartMs collectionStartMs;
+  public int64_t LynxGlobalMemoryUsageCollectionContext::collectionTimeoutMs collectionTimeoutMs;
+  public NSInteger LynxGlobalMemoryUsageCollectionContext::expectedInstanceCount expectedInstanceCount;
+  public NSInteger LynxGlobalMemoryUsageCollectionContext::receivedFetchResultCount receivedFetchResultCount;
+  public NSMutableArray<LynxInstanceMemoryUsage *>* LynxGlobalMemoryUsageCollectionContext::instances instances;
+  public instancetype LynxGlobalMemoryUsageCollectionContext::initWithCollectionId:collectionStartMs:collectionTimeoutMs:expectedInstanceCount:callback:(uint64_t collectionId,[collectionStartMs] int64_t collectionStartMs,[collectionTimeoutMs] int64_t collectionTimeoutMs,[expectedInstanceCount] NSInteger expectedInstanceCount,[callback] LynxGlobalMemoryUsageCallback callback);
+  public BOOL LynxGlobalMemoryUsageCollectionContext::matchesCollectionId:(uint64_t collectionId);
+  public void LynxGlobalMemoryUsageCollectionContext::addCallback:(LynxGlobalMemoryUsageCallback callback);
+  public void LynxGlobalMemoryUsageCollectionContext::recordInstanceResult:(LynxInstanceMemoryUsage *_Nullable result);
+  public BOOL LynxGlobalMemoryUsageCollectionContext::hasReceivedAllFetchResults();
+  public NSArray< id > * LynxGlobalMemoryUsageCollectionContext::copyCallbacksForCompletion();
+}
+
 public class LynxGlobalMemoryUsageResult : NSObject {
   public int64_t LynxGlobalMemoryUsageResult::collectionStartMs collectionStartMs;
   public LynxMemoryCollectionStatus LynxGlobalMemoryUsageResult::collectionStatus collectionStatus;
@@ -2365,7 +2388,7 @@ public class LynxInstanceMemoryUsage : NSObject {
   public int64_t LynxInstanceMemoryUsage::elementBytes elementBytes;
   public int32_t LynxInstanceMemoryUsage::elementNodeCount elementNodeCount;
   public int64_t LynxInstanceMemoryUsage::viewBytes viewBytes;
-  public NSDictionary<NSString *, NSNumber *>* LynxInstanceMemoryUsage::viewDetail viewDetail;
+  public NSDictionary<NSString *, LynxMemoryRecord *>* LynxInstanceMemoryUsage::viewDetail viewDetail;
   public int64_t LynxInstanceMemoryUsage::mainThreadRuntimeBytes mainThreadRuntimeBytes;
   public int64_t LynxInstanceMemoryUsage::backgroundThreadRuntimeBytes backgroundThreadRuntimeBytes;
   public NSString* LynxInstanceMemoryUsage::btsRuntimeGroupId btsRuntimeGroupId;
@@ -2970,6 +2993,16 @@ public class LynxMemoryUsageEntry : LynxPerformanceEntry {
   public instancetype LynxMemoryUsageEntry::initWithDictionary:(NSDictionary *dictionary);
 }
 
+public protocol LynxMemoryUsageFetcher-p : <NSObject> {
+  public void LynxMemoryUsageFetcher-p::queryMemoryUsageAsync:(LynxMemoryUsageFetcherCallback callback);
+}
+
+public class LynxMemoryUsageFetchers : NSObject {
+  public BOOL LynxMemoryUsageFetchers::registerFetcher:(nullable id< LynxMemoryUsageFetcher > fetcher);
+  public BOOL LynxMemoryUsageFetchers::unregisterFetcher:(nullable id< LynxMemoryUsageFetcher > fetcher);
+  public NSArray< id< LynxMemoryUsageFetcher > > * LynxMemoryUsageFetchers::fetchersForCurrentQuery();
+}
+
 public class LynxMemoryUsageItem : NSObject {
   public NSString* LynxMemoryUsageItem::category category;
   public NSNumber* LynxMemoryUsageItem::sizeBytes sizeBytes;
@@ -2980,6 +3013,7 @@ public class LynxMemoryUsageItem : NSObject {
 public class LynxMemoryUsageQuery : NSObject {
   public instancetype LynxMemoryUsageQuery::sharedInstance();
   public void LynxMemoryUsageQuery::queryLynxGlobalMemoryUsageAsync:(nullable LynxGlobalMemoryUsageCallback callback);
+  public void LynxMemoryUsageQuery::queryLynxGlobalMemoryUsageAsync:timeoutMs:(nullable LynxGlobalMemoryUsageCallback callback,[timeoutMs] int64_t timeoutMs);
 }
 
 public class LynxMetricFspEntry : LynxPerformanceEntry {
@@ -3599,6 +3633,7 @@ public protocol LynxServiceTextProtocol-p : <LynxServiceProtocol> {
   public void LynxServiceTextProtocol-p::destroyPage:(void *page);
   public void LynxServiceTextProtocol-p::drawPage:OnContext:(void *page,[OnContext] CGContextRef context);
   public nullable LynxTextInfo * LynxServiceTextProtocol-p::getTextInfo:fontSize:fontFamily:maxWidth:maxLine:(NSString *text,[fontSize] NSString *fontSize,[fontFamily] nullable NSString *fontFamily,[maxWidth] nullable NSString *maxWidth,[maxLine] NSInteger maxLine);
+  public NSArray< NSNumber * > * LynxServiceTextProtocol-p::getHitTestEventTargetsOfPage:ByTouchPosition:(void *page,[ByTouchPosition] CGPoint point);
   public int LynxServiceTextProtocol-p::getSelectionCharIndexOfPage:ByTouchPosition:(void *page,[ByTouchPosition] CGPoint point);
   public NSArray * LynxServiceTextProtocol-p::getSelectionRectsOfPage:ByCharRange:(void *page,[ByCharRange] NSRange range);
 }
@@ -3952,6 +3987,7 @@ public protocol LynxTemplateRenderProtocol-p : <NSObject> {
   public void LynxTemplateRenderProtocol-p::updateViewport:(BOOL needLayout);
   public void LynxTemplateRenderProtocol-p::updateScreenMetricsWithWidth:height:(CGFloat width,[height] CGFloat height);
   public void LynxTemplateRenderProtocol-p::updateFontScale:(CGFloat scale);
+  public void LynxTemplateRenderProtocol-p::updateColorScheme:(LynxColorScheme scheme);
   public void LynxTemplateRenderProtocol-p::pauseRootLayoutAnimation();
   public void LynxTemplateRenderProtocol-p::resumeRootLayoutAnimation();
   public void LynxTemplateRenderProtocol-p::restartAnimation();
@@ -4398,7 +4434,7 @@ public class LynxUI : <__covariant V UIView> {
   public nullable V LynxUI::createView();
   public void LynxUI::updateFrame:withPadding:border:margin:withLayoutAnimation:(CGRect frame,[withPadding] UIEdgeInsets padding,[border] UIEdgeInsets border,[margin] UIEdgeInsets margin,[withLayoutAnimation] BOOL with);
   public void LynxUI::updateFrame:withPadding:border:withLayoutAnimation:(CGRect frame,[withPadding] UIEdgeInsets padding,[border] UIEdgeInsets border,[withLayoutAnimation] BOOL with);
-  public void LynxUI::updateSticky:(NSArray *info);
+  public void LynxUI::updateSticky:(nullable NSArray *info);
   public void LynxUI::checkStickyOnParentScroll:withOffsetY:(CGFloat offsetX,[withOffsetY] CGFloat offsetY);
   public void LynxUI::layoutDidFinished();
   public void LynxUI::finishLayoutOperation();
@@ -4491,6 +4527,7 @@ public class LynxUI : <__covariant V UIView> {
   public void LynxUI()::initProperties();
   public void LynxUI()::onNodeReadyForUIOwner();
   public void LynxUI()::propsDidUpdateForUIOwner();
+  public void LynxUI()::calculateStickyTranslateWithOffset:isVertical:scrollerSize:maxOffset:(CGFloat offset, [isVertical] BOOL isVertical, [scrollerSize] CGFloat scrollerSize, [maxOffset] CGFloat maxOffset);
   public void LynxUI(Accessibility)::handleAccessibility:autoScroll:(UIView *accessibilityAttachedCell, [autoScroll] BOOL accessibilityAutoScroll);
   public NSString * LynxUI(Accessibility)::accessibilityText();
   public NSArray * LynxUI(Accessibility)::setExclusiveAccessibilityElements:subTree:previousNodes:(BOOL exclusive, [subTree] LynxUI *subTree, [previousNodes] NSArray *previousNodes);
@@ -4751,6 +4788,7 @@ public class LynxUIExposure : NSObject {
   public void LynxUIExposure()::setObserverFrameRateForLynxView:(int32_t rate);
   public void LynxUIExposure()::setEnableCheckExposureOptimize:(BOOL enableCheckExposureOptimize);
   public void LynxUIExposure()::setEnableDisexposureWhenBackground:(BOOL enableDisexposureWhenBackground);
+  public void LynxUIExposure()::setEnableExposureDetection:(BOOL enable);
   public void LynxUIExposure()::exposureHandler:(CADisplayLink *sender);
   public void LynxUIExposure()::sendEvent:eventName:(NSMutableSet< LynxUIExposureDetail * > *uiSet, [eventName] NSString *eventName);
   public void LynxUIExposure()::removeFromRunLoop();
@@ -5225,6 +5263,9 @@ public class LynxUIScroller : AbsLynxUIScroller, <LynxScrollView> {
   public float LynxUIScroller::scrollRightLimit();
   public float LynxUIScroller::scrollUpLimit();
   public float LynxUIScroller::scrollDownLimit();
+  public void LynxUIScroller::addStickyChildSign:(NSInteger sign);
+  public void LynxUIScroller::removeStickyChildSign:(NSInteger sign);
+  public void LynxUIScroller::refreshStickyChildren();
   public void LynxUIScroller::updateContentSize();
 }
 
@@ -5410,6 +5451,7 @@ public class LynxView : UIView, <LUIBodyView>, <LynxSecurityTarget>, <LynxRender
   public void LynxView::unSubscribeSessionStorage:withId:(nonnull NSString *key,[withId] double callbackId);
   public void LynxView::updateScreenMetricsWithWidth:height:(CGFloat width,[height] CGFloat height);
   public void LynxView::updateFontScale:(CGFloat scale);
+  public void LynxView::updateColorScheme:(LynxColorScheme scheme);
   public void LynxView::pauseRootLayoutAnimation();
   public void LynxView::resumeRootLayoutAnimation();
   public void LynxView::resetAnimation();
@@ -5423,6 +5465,7 @@ public class LynxView : UIView, <LUIBodyView>, <LynxSecurityTarget>, <LynxRender
   public nullable LynxUI * LynxView::uiWithName:(nonnull NSString *name);
   public nullable LynxUI * LynxView::uiWithIdSelector:(nonnull NSString *idSelector);
   public nullable UIView * LynxView::viewWithIdSelector:(nonnull NSString *idSelector);
+  public void LynxView::getLynxElementRoot:(void(^_Nonnull callback)(LynxElement *_Nullable element));
   public void LynxView::addLifecycleClient:(nonnull id< LynxViewBaseLifecycle > lifecycleClient);
   public void LynxView::removeLifecycleClient:(nonnull id< LynxViewBaseLifecycle > lifecycleClient);
   public void LynxView::updateViewportWithPreferredLayoutWidth:preferredLayoutHeight:(CGFloat preferredLayoutWidth,[preferredLayoutHeight] CGFloat preferredLayoutHeight);
@@ -5815,6 +5858,8 @@ public enum LynxFeature {
     lynx::shell::LynxActor<lynx::tasm::performance::PerformanceController>
 
   typedef LynxMemoryRecord *_Nonnull(^ LynxMemoryRecordBuilder) (void)
+
+  public NS_ASSUME_NONNULL_BEGIN typedef void(^ LynxMemoryUsageFetcherCallback) (LynxInstanceMemoryUsage *_Nullable result) LynxMemoryUsageFetcherCallback;
 
   public FOUNDATION_EXTERN NSString* const kTimingEventPropSSRMetrics kTimingEventPropSSRMetrics;
   public FOUNDATION_EXTERN NSString* const kTimingEventPropSSRRenderPage kTimingEventPropSSRRenderPage;
@@ -6560,6 +6605,11 @@ public enum LynxThreadStrategyForRender {
   LynxThreadStrategyForRenderMostOnTASM
   LynxThreadStrategyForRenderPartOnLayout
   LynxThreadStrategyForRenderMultiThreads
+}
+
+public enum LynxColorScheme {
+  LynxColorSchemeLight
+  LynxColorSchemeDark
 }
 
   public typedef NS_OPTIONS(NSInteger, LynxEmbeddedMode);

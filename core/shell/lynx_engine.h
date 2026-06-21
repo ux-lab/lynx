@@ -56,6 +56,9 @@ class LynxEngine {
                                 const std::string& method,
                                 const pub::Value& params,
                                 runtime::js::ApiCallBack callback) = 0;
+
+    virtual void StartRecording(const lepus::Value& value) = 0;
+    virtual void StopRecording(const lepus::Value& value) = 0;
   };
 
   explicit LynxEngine(
@@ -121,6 +124,8 @@ class LynxEngine {
   void SetAnimationsPending(bool need_pending_ui_op);
 
   void UpdateFontScale(float scale);
+
+  void UpdateColorScheme(int scheme);
 
   void UpdateScreenMetrics(float width, float height, float device_pixel_ratio);
 
@@ -194,6 +199,10 @@ class LynxEngine {
 
   std::unordered_map<std::string, std::string> GetAllJsSource();
 
+  int32_t GetLynxElementRootSign();
+
+  std::string GetLynxElementTreeAsJSONString(int32_t sign);
+
   void UpdateDataByJS(runtime::UpdateDataTask task);
 
   void UpdateBatchedDataByJS(std::vector<runtime::UpdateDataTask> tasks,
@@ -253,6 +262,9 @@ class LynxEngine {
                       std::shared_ptr<tasm::PipelineOptions> pipeline_options);
 
   void ReloadFromJS(runtime::UpdateDataTask task);
+
+  void StartRecording(const lepus::Value& value);
+  void StopRecording(const lepus::Value& value);
 
   void AddFont(const lepus::Value& font, runtime::js::ApiCallBack callback);
 

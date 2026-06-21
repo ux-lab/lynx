@@ -3,19 +3,22 @@
 // LICENSE file in the root directory of this source tree.
 #include "clay/ui/component/builtin_views.h"
 
+#include "build/build_config.h"
 #include "clay/ui/component/component.h"
 
 #ifndef ENABLE_CLAY_LITE
+#ifndef OS_IOS
 #include "clay/ui/component/editable/input_ng_view.h"
 #include "clay/ui/component/editable/input_view.h"
 #include "clay/ui/component/editable/textarea_ng_view.h"
 #include "clay/ui/component/editable/textarea_view.h"
 #include "clay/ui/shadow/editable_shadow_node.h"
+#endif  // OS_IOS
 #endif  // ENABLE_CLAY_LITE
 
-#ifndef ENABLE_NATIVE_LIST
+#ifndef LYNX_ENABLE_CLAY_NATIVE_LIST
 #include "clay/ui/component/list/list_wrapper.h"
-#endif  // ENABLE_NATIVE_LIST
+#endif  // LYNX_ENABLE_CLAY_NATIVE_LIST
 
 #include "clay/ui/component/image_view.h"
 #include "clay/ui/component/list/list_container/list_container_wrapper.h"
@@ -32,6 +35,7 @@
 #include "clay/ui/shadow/text_shadow_node.h"
 
 #if (defined(OS_MAC) || defined(OS_WIN))
+#include "clay/ui/component/cover_view.h"
 #include "clay/ui/component/title_bar_view.h"
 #endif
 
@@ -55,7 +59,7 @@ REGISTER_CLAY_ELEMENT("scroll-view", ScrollWrapper, void);
 REGISTER_CLAY_ELEMENT("x-scroll-view", ScrollWrapper, void);
 REGISTER_CLAY_ELEMENT("component", Component, void);
 REGISTER_CLAY_ELEMENT("list-item", ListItemView, void);
-#ifndef ENABLE_NATIVE_LIST
+#ifndef LYNX_ENABLE_CLAY_NATIVE_LIST
 REGISTER_CLAY_ELEMENT("list", ListWrapper, void);
 #else
 REGISTER_CLAY_ELEMENT("list", ListContainerWrapper, void);
@@ -63,15 +67,18 @@ REGISTER_CLAY_ELEMENT("list", ListContainerWrapper, void);
 REGISTER_CLAY_ELEMENT("list-container", ListContainerWrapper, void);
 
 #ifndef ENABLE_CLAY_LITE
+#ifndef OS_IOS
 REGISTER_CLAY_ELEMENT("x-input-ng", InputNGView, EditableShadowNode);
 REGISTER_CLAY_ELEMENT("x-textarea-ng", TextAreaNGView, EditableShadowNode);
 REGISTER_CLAY_ELEMENT("x-textarea", TextAreaView, EditableShadowNode);
 REGISTER_CLAY_ELEMENT("textarea", TextAreaView, EditableShadowNode);
 REGISTER_CLAY_ELEMENT("input", InputView, EditableShadowNode);
 REGISTER_CLAY_ELEMENT("x-input", InputView, EditableShadowNode);
+#endif  // OS_IOS
 #endif  // ENABLE_CLAY_LITE
 
 #if (defined(OS_MAC) || defined(OS_WIN))
+REGISTER_CLAY_ELEMENT("cover-view", CoverView, void);
 REGISTER_CLAY_ELEMENT("title-bar-view", TitleBarView, void);
 #endif
 }  // namespace clay

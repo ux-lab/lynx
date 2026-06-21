@@ -82,9 +82,8 @@ GPUSurfaceMetalSkity::GPUSurfaceMetalSkity(GPUSurfaceMetalDelegate* delegate,
       context_(std::move(context)),
       msaa_samples_(msaa_samples),
       render_to_surface_(render_to_surface) {
-#if defined(OS_OSX)
   context_->SetEnableSimpleShapePipeline(true);
-#endif
+  context_->EnableRenderTargetCache(false);
 }
 
 GPUSurfaceMetalSkity::~GPUSurfaceMetalSkity() = default;

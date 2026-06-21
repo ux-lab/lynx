@@ -8,6 +8,9 @@
 #include "core/template_bundle/template_codec/binary_encoder/css_encoder/css_parser.h"
 
 #include "core/base/json/json_util.h"
+#include "core/renderer/css/ng/font_face/font_face_rule.h"
+#include "core/renderer/css/ng/parser/media_query_parser.h"
+#include "core/renderer/css/ng/parser/supports_condition_parser.h"
 #include "core/template_bundle/template_codec/binary_encoder/css_encoder/css_parser_token.h"
 #include "core/template_bundle/template_codec/binary_encoder/css_encoder/css_rule_parser.h"
 #include "third_party/googletest/googletest/include/gtest/gtest.h"
@@ -315,7 +318,10 @@ TEST_F(CSSRuleParserTest, ParseMediaRule) {
 
   auto* media_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(media_rule->condition, "(max-width:1250px)");
+  auto expected_media =
+      css::MediaQueryParser::ParseMediaQuerySet("(max-width:1250px)")
+          ->ToLepus();
+  EXPECT_EQ(media_rule->condition_value, expected_media);
   ASSERT_EQ(media_rule->child_rules.size(), 1u);
   EXPECT_EQ(media_rule->child_rules[0]->type, CSSRuleType::kStyle);
 
@@ -348,7 +354,9 @@ TEST_F(CSSRuleParserTest, ParseSupportsRule) {
 
   auto* supports_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(supports_rule->condition, "(display:flex)");
+  auto expected_supports =
+      css::SupportsConditionParser::Parse("(display:flex)")->ToLepus();
+  EXPECT_EQ(supports_rule->condition_value, expected_supports);
   EXPECT_EQ(supports_rule->child_rules.size(), 0u);
 }
 
@@ -368,6 +376,12 @@ TEST_F(CSSRuleParserTest, ParseFontFaceRule) {
           "value": "url(https://example.com/font.woff2)",
           "keyLoc": { "line": 1, "column": 150 },
           "valLoc": { "line": 1, "column": 221 }
+        },
+        {
+          "name": "font-style",
+          "value": "oblique 10deg 20deg",
+          "keyLoc": { "line": 1, "column": 224 },
+          "valLoc": { "line": 1, "column": 236 }
         }
       ]
     }
@@ -385,7 +399,18 @@ TEST_F(CSSRuleParserTest, ParseFontFaceRule) {
   auto* fontface_rule =
       static_cast<encoder::LynxStyleRuleFontFace*>(rules[0].get());
   EXPECT_EQ(fontface_rule->family, "Bitstream Vera Serif Bold");
-  EXPECT_EQ(fontface_rule->properties.size(), 1u);
+  auto parsed_rule =
+      css::FontFaceRule::FromLepus(fontface_rule->font_face_rule);
+  ASSERT_NE(parsed_rule, nullptr);
+  EXPECT_EQ(parsed_rule->Family(), "Bitstream Vera Serif Bold");
+  ASSERT_EQ(parsed_rule->Sources().size(), 1u);
+  EXPECT_FALSE(parsed_rule->Sources()[0].is_local);
+  EXPECT_EQ(parsed_rule->Sources()[0].uri, "https://example.com/font.woff2");
+  EXPECT_EQ(parsed_rule->WeightMin(), 400);
+  EXPECT_EQ(parsed_rule->WeightMax(), 400);
+  EXPECT_EQ(parsed_rule->StyleKind(), css::FontFaceStyleKind::kOblique);
+  EXPECT_EQ(parsed_rule->ObliqueAngleMin(), 1000);
+  EXPECT_EQ(parsed_rule->ObliqueAngleMax(), 2000);
 }
 
 TEST_F(CSSRuleParserTest, ParseKeyframesRule) {
@@ -628,7 +653,9 @@ TEST_F(CSSRuleParserTest, ParseMediaRuleWithMultipleChildRules) {
 
   auto* media_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(media_rule->condition, "(min-width:600px)");
+  auto expected_media =
+      css::MediaQueryParser::ParseMediaQuerySet("(min-width:600px)")->ToLepus();
+  EXPECT_EQ(media_rule->condition_value, expected_media);
   ASSERT_EQ(media_rule->child_rules.size(), 2u);
   EXPECT_EQ(media_rule->child_rules[0]->type, CSSRuleType::kStyle);
   EXPECT_EQ(media_rule->child_rules[1]->type, CSSRuleType::kStyle);
@@ -823,7 +850,9 @@ TEST_F(CSSRuleParserTest, ParseMediaRuleWithoutPrelude) {
 
   auto* media_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(media_rule->condition, "");
+  auto expected_media =
+      css::MediaQueryParser::ParseMediaQuerySet("")->ToLepus();
+  EXPECT_EQ(media_rule->condition_value, expected_media);
   ASSERT_EQ(media_rule->child_rules.size(), 1u);
 }
 
@@ -845,7 +874,9 @@ TEST_F(CSSRuleParserTest, ParseMediaRuleWithoutRulesField) {
 
   auto* media_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(media_rule->condition, "(min-width:600px)");
+  auto expected_media =
+      css::MediaQueryParser::ParseMediaQuerySet("(min-width:600px)")->ToLepus();
+  EXPECT_EQ(media_rule->condition_value, expected_media);
   EXPECT_EQ(media_rule->child_rules.size(), 0u);
 }
 
@@ -890,10 +921,133 @@ TEST_F(CSSRuleParserTest, ParseSupportsRuleWithChildRules) {
 
   auto* supports_rule =
       static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
-  EXPECT_EQ(supports_rule->condition, "(display:grid)");
+  auto expected_supports =
+      css::SupportsConditionParser::Parse("(display:grid)")->ToLepus();
+  EXPECT_EQ(supports_rule->condition_value, expected_supports);
   ASSERT_EQ(supports_rule->child_rules.size(), 2u);
   EXPECT_EQ(supports_rule->child_rules[0]->type, CSSRuleType::kStyle);
   EXPECT_EQ(supports_rule->child_rules[1]->type, CSSRuleType::kStyle);
+}
+
+TEST_F(CSSRuleParserTest, ParseMediaRuleWithKeyframesAndStyleChildren) {
+  // CSS Conditional Rules L3: a conditional group rule's body is a
+  // <stylesheet>, so @keyframes is allowed inside @media. Verify that the
+  // parser keeps the @keyframes child instead of dropping it as an unknown
+  // at-rule.
+  const char* json_str = R"json([
+    {
+      "type": "MediaRule",
+      "prelude": { "value": "(min-width:600px)", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "KeyframesRule",
+          "name": { "value": "fade", "loc": { "line": 2, "column": 1 } },
+          "styles": [
+            {
+              "keyText": { "value": "0%", "loc": { "line": 3, "column": 1 } },
+              "variables": {},
+              "style": [
+                { "name": "opacity", "value": "0",
+                  "keyLoc": { "line": 3, "column": 5 },
+                  "valLoc": { "line": 3, "column": 14 } }
+              ]
+            },
+            {
+              "keyText": { "value": "100%", "loc": { "line": 4, "column": 1 } },
+              "variables": {},
+              "style": [
+                { "name": "opacity", "value": "1",
+                  "keyLoc": { "line": 4, "column": 7 },
+                  "valLoc": { "line": 4, "column": 16 } }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "color", "value": "red",
+              "keyLoc": { "line": 5, "column": 1 },
+              "valLoc": { "line": 5, "column": 8 } }
+          ],
+          "selectorText": { "value": ".a", "loc": { "line": 5, "column": 1 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kMedia);
+
+  auto* media_rule =
+      static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
+  ASSERT_EQ(media_rule->child_rules.size(), 2u);
+  EXPECT_EQ(media_rule->child_rules[0]->type, CSSRuleType::kKeyframes);
+  EXPECT_EQ(media_rule->child_rules[1]->type, CSSRuleType::kStyle);
+
+  auto* keyframes_rule = static_cast<encoder::LynxStyleRuleKeyframes*>(
+      media_rule->child_rules[0].get());
+  EXPECT_EQ(keyframes_rule->name, "fade");
+}
+
+TEST_F(CSSRuleParserTest, ParseSupportsRuleWithFontFaceChild) {
+  // @font-face is a top-level at-rule and is permitted inside @supports
+  // per CSS Conditional Rules L3. Verify that the parser keeps it.
+  const char* json_str = R"json([
+    {
+      "type": "SupportsRule",
+      "prelude": { "value": "(display:grid)", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "FontFaceRule",
+          "style": [
+            { "name": "font-family", "value": "MyFont",
+              "keyLoc": { "line": 2, "column": 1 },
+              "valLoc": { "line": 2, "column": 14 } },
+            { "name": "src", "value": "url(https://example.com/font.woff2)",
+              "keyLoc": { "line": 3, "column": 1 },
+              "valLoc": { "line": 3, "column": 6 } }
+          ]
+        },
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "display", "value": "grid",
+              "keyLoc": { "line": 4, "column": 1 },
+              "valLoc": { "line": 4, "column": 10 } }
+          ],
+          "selectorText": { "value": ".grid", "loc": { "line": 4, "column": 1 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kSupports);
+
+  auto* supports_rule =
+      static_cast<encoder::LynxStyleRuleCondition*>(rules[0].get());
+  ASSERT_EQ(supports_rule->child_rules.size(), 2u);
+  EXPECT_EQ(supports_rule->child_rules[0]->type, CSSRuleType::kFontFace);
+  EXPECT_EQ(supports_rule->child_rules[1]->type, CSSRuleType::kStyle);
+
+  auto* fontface_rule = static_cast<encoder::LynxStyleRuleFontFace*>(
+      supports_rule->child_rules[0].get());
+  EXPECT_EQ(fontface_rule->family, "MyFont");
 }
 
 TEST_F(CSSRuleParserTest, ParseConditionRuleChildWithoutTypeSkipped) {
@@ -1024,7 +1178,7 @@ TEST_F(CSSRuleParserTest, ParseKeyframesRuleWithSingleKeyframe) {
   EXPECT_NE(keyframes_rule->properties, nullptr);
 }
 
-TEST_F(CSSRuleParserTest, ParseFontFaceRuleWithOnlyFamily) {
+TEST_F(CSSRuleParserTest, ParseFontFaceRuleWithoutSrcRejected) {
   const char* json_str = R"json([
     {
       "type": "FontFaceRule",
@@ -1042,13 +1196,10 @@ TEST_F(CSSRuleParserTest, ParseFontFaceRuleWithOnlyFamily) {
 
   ASSERT_NE(fragment, nullptr);
   const auto& rules = fragment->rules();
-  ASSERT_EQ(rules.size(), 1u);
-  EXPECT_EQ(rules[0]->type, CSSRuleType::kFontFace);
-
-  auto* fontface_rule =
-      static_cast<encoder::LynxStyleRuleFontFace*>(rules[0].get());
-  EXPECT_EQ(fontface_rule->family, "MyFont");
-  EXPECT_EQ(fontface_rule->properties.size(), 1u);
+  EXPECT_TRUE(rules.empty());
+  ASSERT_EQ(impl.diagnostics().size(), 1u);
+  EXPECT_EQ(impl.diagnostics()[0].type, "font-face");
+  EXPECT_EQ(impl.diagnostics()[0].name, "MyFont");
 }
 
 TEST_F(CSSRuleParserTest, ParseMixedRulesWithInvalidEntriesFiltered) {
@@ -1078,7 +1229,10 @@ TEST_F(CSSRuleParserTest, ParseMixedRulesWithInvalidEntriesFiltered) {
       "style": [
         { "name": "font-family", "value": "ValidFont",
           "keyLoc": { "line": 5, "column": 1 },
-          "valLoc": { "line": 5, "column": 14 } }
+          "valLoc": { "line": 5, "column": 14 } },
+        { "name": "src", "value": "url(valid.woff2)",
+          "keyLoc": { "line": 5, "column": 20 },
+          "valLoc": { "line": 5, "column": 25 } }
       ]
     }
   ])json";
@@ -1092,6 +1246,464 @@ TEST_F(CSSRuleParserTest, ParseMixedRulesWithInvalidEntriesFiltered) {
   EXPECT_EQ(rules.size(), 2u);
   EXPECT_EQ(rules[0]->type, CSSRuleType::kStyle);
   EXPECT_EQ(rules[1]->type, CSSRuleType::kFontFace);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerBlockRule) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "utilities", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "padding", "value": "0.5rem",
+              "keyLoc": { "line": 1, "column": 10 },
+              "valLoc": { "line": 1, "column": 19 } }
+          ],
+          "selectorText": { "value": ".padding-sm", "loc": { "line": 1, "column": 5 } },
+          "variables": {}
+        },
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "padding", "value": "0.8rem",
+              "keyLoc": { "line": 1, "column": 30 },
+              "valLoc": { "line": 1, "column": 39 } }
+          ],
+          "selectorText": { "value": ".padding-lg", "loc": { "line": 1, "column": 25 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerBlock);
+
+  auto* layer_rule = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule->name, (std::vector<std::string>{"utilities"}));
+  EXPECT_EQ(layer_rule->layer_position, 0u);
+  ASSERT_EQ(layer_rule->child_rules.size(), 2u);
+  EXPECT_EQ(layer_rule->child_rules[0]->type, CSSRuleType::kStyle);
+  EXPECT_EQ(layer_rule->child_rules[1]->type, CSSRuleType::kStyle);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementRule) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "utilities,reset", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 2u);
+
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerStatement);
+  auto* layer_rule0 = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule0->name, (std::vector<std::string>{"utilities"}));
+  EXPECT_EQ(layer_rule0->layer_position, 0u);
+  EXPECT_EQ(layer_rule0->child_rules.size(), 0u);
+
+  EXPECT_EQ(rules[1]->type, CSSRuleType::kLayerStatement);
+  auto* layer_rule1 = static_cast<encoder::LynxStyleRuleLayer*>(rules[1].get());
+  EXPECT_EQ(layer_rule1->name, (std::vector<std::string>{"reset"}));
+  EXPECT_EQ(layer_rule1->layer_position, 1u);
+  EXPECT_EQ(layer_rule1->child_rules.size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseNestedLayerRule) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "utilities", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "padding", "value": "0.5rem",
+              "keyLoc": { "line": 1, "column": 10 },
+              "valLoc": { "line": 1, "column": 19 } }
+          ],
+          "selectorText": { "value": ".padding-sm", "loc": { "line": 1, "column": 5 } },
+          "variables": {}
+        },
+        {
+          "type": "LayerRule",
+          "prelude": { "value": "nested", "loc": { "line": 1, "column": 30 } },
+          "rules": [
+            {
+              "type": "StyleRule",
+              "style": [
+                { "name": "padding", "value": "0.8rem",
+                  "keyLoc": { "line": 1, "column": 40 },
+                  "valLoc": { "line": 1, "column": 49 } }
+              ],
+              "selectorText": { "value": ".padding-lg", "loc": { "line": 1, "column": 35 } },
+              "variables": {}
+            }
+          ]
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerBlock);
+
+  auto* layer_rule = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule->name, (std::vector<std::string>{"utilities"}));
+  EXPECT_EQ(layer_rule->layer_position, 0u);
+  ASSERT_EQ(layer_rule->child_rules.size(), 2u);
+  EXPECT_EQ(layer_rule->child_rules[0]->type, CSSRuleType::kStyle);
+  EXPECT_EQ(layer_rule->child_rules[1]->type, CSSRuleType::kLayerBlock);
+
+  auto* nested_layer = static_cast<encoder::LynxStyleRuleLayer*>(
+      layer_rule->child_rules[1].get());
+  EXPECT_EQ(nested_layer->name, (std::vector<std::string>{"nested"}));
+  EXPECT_EQ(nested_layer->layer_position, 1u);
+  ASSERT_EQ(nested_layer->child_rules.size(), 1u);
+  EXPECT_EQ(nested_layer->child_rules[0]->type, CSSRuleType::kStyle);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerRuleWithoutPrelude) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "color", "value": "red",
+              "keyLoc": { "line": 1, "column": 1 },
+              "valLoc": { "line": 1, "column": 8 } }
+          ],
+          "selectorText": { "value": ".a", "loc": { "line": 1, "column": 1 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerBlock);
+
+  auto* layer_rule = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule->name, (std::vector<std::string>{}));
+  ASSERT_EQ(layer_rule->child_rules.size(), 1u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerRuleOrderWithMixedRules) {
+  const char* json_str = R"json([
+    {
+      "type": "StyleRule",
+      "style": [
+        { "name": "color", "value": "red",
+          "keyLoc": { "line": 1, "column": 1 },
+          "valLoc": { "line": 1, "column": 8 } }
+      ],
+      "selectorText": { "value": ".a", "loc": { "line": 1, "column": 1 } },
+      "variables": {}
+    },
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "base", "loc": { "line": 1, "column": 10 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "color", "value": "blue",
+              "keyLoc": { "line": 1, "column": 20 },
+              "valLoc": { "line": 1, "column": 27 } }
+          ],
+          "selectorText": { "value": ".b", "loc": { "line": 1, "column": 15 } },
+          "variables": {}
+        }
+      ]
+    },
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "utilities,reset", "loc": { "line": 1, "column": 30 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 4u);
+
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kStyle);
+  auto* style_rule = static_cast<encoder::LynxStyleRule*>(rules[0].get());
+  EXPECT_EQ(style_rule->position, 0u);
+
+  EXPECT_EQ(rules[1]->type, CSSRuleType::kLayerBlock);
+  auto* layer_block = static_cast<encoder::LynxStyleRuleLayer*>(rules[1].get());
+  EXPECT_EQ(layer_block->name, (std::vector<std::string>{"base"}));
+  EXPECT_EQ(layer_block->layer_position, 0u);
+  ASSERT_EQ(layer_block->child_rules.size(), 1u);
+
+  EXPECT_EQ(rules[2]->type, CSSRuleType::kLayerStatement);
+  auto* layer_stmt0 = static_cast<encoder::LynxStyleRuleLayer*>(rules[2].get());
+  EXPECT_EQ(layer_stmt0->name, (std::vector<std::string>{"utilities"}));
+  EXPECT_EQ(layer_stmt0->layer_position, 1u);
+  EXPECT_EQ(layer_stmt0->child_rules.size(), 0u);
+
+  EXPECT_EQ(rules[3]->type, CSSRuleType::kLayerStatement);
+  auto* layer_stmt1 = static_cast<encoder::LynxStyleRuleLayer*>(rules[3].get());
+  EXPECT_EQ(layer_stmt1->name, (std::vector<std::string>{"reset"}));
+  EXPECT_EQ(layer_stmt1->layer_position, 2u);
+  EXPECT_EQ(layer_stmt1->child_rules.size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementMultiSegmentDottedName) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "framework.theme.button, base.reset", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 2u);
+  EXPECT_EQ(static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get())->name,
+            (std::vector<std::string>{"framework", "theme", "button"}));
+  EXPECT_EQ(static_cast<encoder::LynxStyleRuleLayer*>(rules[1].get())->name,
+            (std::vector<std::string>{"base", "reset"}));
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerBlockDottedName) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "framework.theme", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "color", "value": "red",
+              "keyLoc": { "line": 1, "column": 1 },
+              "valLoc": { "line": 1, "column": 8 } }
+          ],
+          "selectorText": { "value": ".a", "loc": { "line": 1, "column": 1 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerBlock);
+  auto* layer_rule = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule->name, (std::vector<std::string>{"framework", "theme"}));
+  ASSERT_EQ(layer_rule->child_rules.size(), 1u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementRejectsTrailingDot) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "a., b", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  // Per CSS spec a parse error in the prelude makes the entire statement
+  // rule invalid; no LayerStatement rules should be produced.
+  EXPECT_EQ(fragment->rules().size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementRejectsWhitespaceInsideName) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "a . b", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  // 'a . b' has whitespace between the ident and '.', which is not allowed
+  // inside a <layer-name>. The whole statement must be rejected.
+  EXPECT_EQ(fragment->rules().size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementRejectsNonIdentToken) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "a, 123, b", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  // A non-ident token in the middle of the list invalidates the whole
+  // statement; partial recovery is not allowed.
+  EXPECT_EQ(fragment->rules().size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerBlockRejectsCommaList) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "a, b", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "color", "value": "red",
+              "keyLoc": { "line": 1, "column": 1 },
+              "valLoc": { "line": 1, "column": 8 } }
+          ],
+          "selectorText": { "value": ".a", "loc": { "line": 1, "column": 1 } },
+          "variables": {}
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  // Block form does not allow a comma-separated list of layer names; the
+  // entire @layer block must be rejected.
+  EXPECT_EQ(fragment->rules().size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerStatementRejectsEmptyPrelude) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "", "loc": { "line": 1, "column": 1 } },
+      "rules": []
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  // An @layer statement rule with an empty prelude is invalid per spec
+  // (statement form requires at least one <layer-name>); no rules emitted.
+  EXPECT_EQ(fragment->rules().size(), 0u);
+}
+
+TEST_F(CSSRuleParserTest, ParseLayerBlockWithNestedMediaRule) {
+  const char* json_str = R"json([
+    {
+      "type": "LayerRule",
+      "prelude": { "value": "utilities", "loc": { "line": 1, "column": 1 } },
+      "rules": [
+        {
+          "type": "StyleRule",
+          "style": [
+            { "name": "padding", "value": "0.5rem",
+              "keyLoc": { "line": 1, "column": 10 },
+              "valLoc": { "line": 1, "column": 19 } }
+          ],
+          "selectorText": { "value": ".padding-sm", "loc": { "line": 1, "column": 5 } },
+          "variables": {}
+        },
+        {
+          "type": "MediaRule",
+          "prelude": { "value": "(min-width:600px)", "loc": { "line": 2, "column": 1 } },
+          "rules": [
+            {
+              "type": "StyleRule",
+              "style": [
+                { "name": "padding", "value": "1rem",
+                  "keyLoc": { "line": 2, "column": 20 },
+                  "valLoc": { "line": 2, "column": 29 } }
+              ],
+              "selectorText": { "value": ".padding-md", "loc": { "line": 2, "column": 15 } },
+              "variables": {}
+            }
+          ]
+        }
+      ]
+    }
+  ])json";
+
+  auto json = base::strToJson(json_str);
+  CSSRuleParser impl(compile_options_);
+  auto fragment = impl.ParseCSSRules(json, "/test.ttss", {}, 0);
+
+  ASSERT_NE(fragment, nullptr);
+  const auto& rules = fragment->rules();
+  ASSERT_EQ(rules.size(), 1u);
+  EXPECT_EQ(rules[0]->type, CSSRuleType::kLayerBlock);
+
+  auto* layer_rule = static_cast<encoder::LynxStyleRuleLayer*>(rules[0].get());
+  EXPECT_EQ(layer_rule->name, (std::vector<std::string>{"utilities"}));
+  EXPECT_EQ(layer_rule->layer_position, 0u);
+  ASSERT_EQ(layer_rule->child_rules.size(), 2u);
+  EXPECT_EQ(layer_rule->child_rules[0]->type, CSSRuleType::kStyle);
+  EXPECT_EQ(layer_rule->child_rules[1]->type, CSSRuleType::kMedia);
+
+  auto* nested_media = static_cast<encoder::LynxStyleRuleCondition*>(
+      layer_rule->child_rules[1].get());
+  auto expected_media =
+      css::MediaQueryParser::ParseMediaQuerySet("(min-width:600px)")->ToLepus();
+  EXPECT_EQ(nested_media->condition_value, expected_media);
+  ASSERT_EQ(nested_media->child_rules.size(), 1u);
+  EXPECT_EQ(nested_media->child_rules[0]->type, CSSRuleType::kStyle);
 }
 
 }  // namespace test

@@ -62,6 +62,7 @@ export enum LynxTrailKey {
   ENABLE_NEW_ANIMATOR_FIBER = 'enable_new_animator_fiber',
   POST_DATA_BEFORE_UPDATE = 'post_data_before_update',
   ENABLE_REPORT_LIST_ITEM_LIFE_STATISTIC = 'enable_report_list_item_life_statistic',
+  ENABLE_NATIVE_LIST = 'enable_native_list',
   ENABLE_ASYNC_DESTROY_ENGINE = 'enable_async_destroy_engine',
   CONCURRENT_LOOP_HIGH_PRIORITY_WORKER_COUNT_PERCENT = 'concurrent_loop_high_priority_worker_count_percent',
   ENABLE_DECOUPLED_LIST = 'enable_decoupled_list',
@@ -80,6 +81,7 @@ export enum LynxTrailKey {
   FIX_FIBER_REINSERT_DETACH_FROM_OLD_RENDER_PARENT = 'fix_fiber_reinsert_detach_from_old_render_parent',
   ENABLE_NEW_STYLING_PIPELINE = 'enable_new_styling_pipeline',
   ENABLE_ELEMENT_API_NEW_REGISTRATION = 'enable_element_api_new_registration',
+  ENABLE_ELEMENT_INVOKE_UI_METHOD_PENDING_TASK = 'enable_element_invoke_ui_method_pending_task',
 }
 
 /**

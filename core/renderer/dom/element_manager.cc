@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/include/debug/lynx_assert.h"
@@ -30,6 +31,7 @@
 #include "core/renderer/dom/fiber/page_element.h"
 #include "core/renderer/dom/fiber/raw_text_element.h"
 #include "core/renderer/dom/fiber/scroll_element.h"
+#include "core/renderer/dom/fiber/template_element.h"
 #include "core/renderer/dom/fiber/text_element.h"
 #include "core/renderer/dom/fiber/view_element.h"
 #include "core/renderer/dom/fiber/wrapper_element.h"
@@ -40,6 +42,7 @@
 #include "core/renderer/trace/renderer_trace_event_def.h"
 #include "core/renderer/ui_wrapper/painting/catalyzer.h"
 #include "core/renderer/ui_wrapper/painting/painting_context.h"
+#include "core/renderer/utils/base/tasm_constants.h"
 #include "core/renderer/utils/lynx_env.h"
 #include "core/services/recorder/recorder_controller.h"
 #include "core/services/timing_handler/timing_constants.h"
@@ -65,6 +68,56 @@ void PostTaskBatchToConcurrentLoop(
         }
       },
       base::ConcurrentTaskType::HIGH_PRIORITY);
+}
+
+void CollectElementContainerForReplay(
+    ElementContainer *container, ElementContainer *ui_parent, int &ui_index,
+    std::vector<InitialLynxUITreeNodeForReplay> &nodes) {
+  if (container == nullptr || container->element() == nullptr) {
+    return;
+  }
+
+  Element *element = container->element();
+  bool is_layout_only = element->IsLayoutOnly();
+  ElementContainer *next_ui_parent = ui_parent;
+  int child_ui_index = 0;
+  if (!is_layout_only) {
+    InitialLynxUITreeNodeForReplay node;
+    node.id = element->impl_id();
+    node.tag = element->GetPlatformNodeTag().str();
+    node.painting_data = element->GetPropBundleForRecording();
+    node.flatten = element->TendToFlatten();
+    node.node_index = element->NodeIndex();
+    const auto layout = container->CalculateCurrentPlatformLayout();
+    if (ui_parent != nullptr) {
+      node.has_parent = true;
+      node.parent = ui_parent->element()->impl_id();
+      node.index = ui_index;
+      ++ui_index;
+    }
+    node.x = layout.left;
+    node.y = layout.top;
+    node.width = element->width();
+    node.height = element->height();
+    node.paddings = element->paddings();
+    node.margins = element->margins();
+    node.borders = element->borders();
+    node.has_sticky = element->is_sticky();
+    if (node.has_sticky && element->sticky_positions().has_value()) {
+      const auto &sticky_positions = *element->sticky_positions();
+      node.sticky = {sticky_positions[0], sticky_positions[1],
+                     sticky_positions[2], sticky_positions[3]};
+    }
+    node.max_height = element->max_height();
+    nodes.emplace_back(std::move(node));
+    next_ui_parent = container;
+  }
+
+  int &next_ui_index = is_layout_only ? ui_index : child_ui_index;
+  for (auto *child : container->children()) {
+    CollectElementContainerForReplay(child, next_ui_parent, next_ui_index,
+                                     nodes);
+  }
 }
 
 }  // namespace
@@ -213,38 +266,6 @@ void ElementManager::OnDocumentUpdated() {
       inspector_element_observer_->OnDocumentUpdated();
     }
   });
-}
-
-void ElementManager::PutCachedTemplateElementTree(
-    const base::String &bundle_url, const base::String &template_key,
-    CachedTemplateElementTree cached_tree) {
-  if (template_key.empty() || cached_tree.generated_.result_ == nullptr) {
-    return;
-  }
-  cached_tree.bundle_url_ = bundle_url;
-  cached_tree.template_key_ = template_key;
-  cached_template_element_trees_.push_back(std::move(cached_tree));
-}
-
-bool ElementManager::TakeCachedTemplateElementTree(
-    const base::String &bundle_url, const base::String &template_key,
-    CachedTemplateElementTree *cached_tree) {
-  if (template_key.empty() || cached_tree == nullptr) {
-    return false;
-  }
-  for (size_t index = cached_template_element_trees_.size(); index > 0;
-       --index) {
-    auto &candidate = cached_template_element_trees_[index - 1];
-    if (!candidate.template_key_.IsEqual(template_key) ||
-        !candidate.bundle_url_.IsEqual(bundle_url)) {
-      continue;
-    }
-    *cached_tree = std::move(candidate);
-    cached_template_element_trees_.erase(
-        cached_template_element_trees_.begin() + index - 1);
-    return true;
-  }
-  return false;
 }
 
 void ElementManager::OnElementManagerWillDestroy() {
@@ -678,6 +699,24 @@ void ElementManager::UpdateFontScale(float font_scale) {
   }
 }
 
+void ElementManager::UpdateColorScheme(int scheme) {
+  auto value = static_cast<css::MediaPreferredColorScheme>(scheme);
+  if (value != css::MediaPreferredColorScheme::kLight &&
+      value != css::MediaPreferredColorScheme::kDark) {
+    return;
+  }
+  if (value == GetLynxEnvConfig().PreferredColorScheme()) {
+    return;
+  }
+  GetLynxEnvConfig().SetPreferredColorScheme(value);
+  if (root()) {
+    root()->UpdateDynamicElementStyle(
+        DynamicCSSStylesManager::kUpdateColorScheme, false);
+    auto options = std::make_shared<PipelineOptions>();
+    RequestResolve(options);
+  }
+}
+
 void ElementManager::SetInspectorElementObserver(
     const std::shared_ptr<InspectorElementObserver>
         &inspector_element_observer) {
@@ -714,6 +753,35 @@ void ElementManager::PatchEventRelatedInfo() {
 
 PaintingContext *ElementManager::painting_context() {
   return catalyzer_->painting_context();
+}
+
+void ElementManager::RecordCurrentLynxUITree() {
+  auto finish_without_initial_tree = [this]() {
+    painting_context()->RecordInitialLynxUITreeForReplay({});
+    painting_context()->FlushImmediately();
+  };
+  if (root_ == nullptr || root_->element_container() == nullptr) {
+    finish_without_initial_tree();
+    return;
+  }
+  if (root_->EnableFragmentLayerRender()) {
+    finish_without_initial_tree();
+    return;
+  }
+  auto *root_container = root_->element_container()->CastToElementContainer();
+  if (root_container == nullptr) {
+    finish_without_initial_tree();
+    return;
+  }
+  int root_index = 0;
+  std::vector<InitialLynxUITreeNodeForReplay> nodes;
+  CollectElementContainerForReplay(root_container, nullptr, root_index, nodes);
+  if (nodes.empty()) {
+    finish_without_initial_tree();
+    return;
+  }
+  painting_context()->RecordInitialLynxUITreeForReplay(std::move(nodes));
+  painting_context()->FlushImmediately();
 }
 
 void ElementManager::UpdateViewport(float width, SLMeasureMode width_mode,
@@ -977,7 +1045,8 @@ void ElementManager::SetConfig(const std::shared_ptr<PageConfig> &config) {
     if (catalyzer() && catalyzer()->painting_context()) {
       catalyzer()->painting_context()->SetConfig(
           {.enable_native_schedule_create_view_async =
-               config_->GetEnableNativeScheduleCreateViewAsyncAsBool()});
+               config_->GetEnableNativeScheduleCreateViewAsyncAsBool(),
+           .enable_new_sticky = config_->GetEnableNewSticky()});
     }
     enable_property_based_simple_style_ =
         config_->GetEnablePropertyBasedSimpleStyle();
@@ -1134,14 +1203,22 @@ fml::RefPtr<FiberElement> ElementManager::CreateFiberElement(
 fml::RefPtr<FiberElement> ElementManager::StaticCreateFiberElement(
     ElementBuiltInTagEnum enum_tag, const base::String &raw_tag) {
   fml::RefPtr<FiberElement> element = nullptr;
-  switch (enum_tag) {
+  // TODO(hexionghui): compatible for cui's fallback ui, remove this when render
+  // by flatten ui not displaylist.
+  ElementBuiltInTagEnum resolved_enum_tag =
+      raw_tag.IsEqual(kElementEcomImageTag) ? ELEMENT_IMAGE : enum_tag;
+  switch (resolved_enum_tag) {
     case ELEMENT_VIEW:
       element = fml::AdoptRef<ViewElement>(new ViewElement(nullptr));
       break;
-    case ELEMENT_IMAGE:
-      element = fml::AdoptRef<ImageElement>(
-          new ImageElement(nullptr, BASE_STATIC_STRING(kElementImageTag)));
+    case ELEMENT_IMAGE: {
+      base::String image_tag = raw_tag.IsEqual(kElementEcomImageTag)
+                                   ? raw_tag
+                                   : BASE_STATIC_STRING(kElementImageTag);
+      element =
+          fml::AdoptRef<ImageElement>(new ImageElement(nullptr, image_tag));
       break;
+    }
     case ELEMENT_INLINE_IMAGE:
       element = fml::AdoptRef<ImageElement>(
           new ImageElement(nullptr, BASE_STATIC_STRING(kElementImageTag)));
@@ -1216,6 +1293,9 @@ fml::RefPtr<FiberElement> ElementManager::StaticCreateFiberElement(
 
 fml::RefPtr<FiberElement> ElementManager::CreateFiberNode(
     const base::String &tag) {
+  if (tag.IsEqual(kElementEcomImageTag)) {
+    return fml::AdoptRef<FiberElement>(new ImageElement(this, tag));
+  }
   auto res = fml::AdoptRef<FiberElement>(new FiberElement(this, tag));
   return res;
 }
@@ -1319,6 +1399,119 @@ void ElementManager::TickListIfNeeded(
       list_element->OnListItemBatchFinished(options);
     }
   }
+}
+
+int32_t ElementManager::ResolveTemplateElementRootIdForList(int32_t id) {
+  if (id == 0 || node_manager_ == nullptr) {
+    return id;
+  }
+  auto *element = node_manager_->Get(id);
+  if (element == nullptr || !element->is_template()) {
+    return id;
+  }
+  auto *template_element = static_cast<TemplateElement *>(element);
+  auto root = template_element->GetResolvedRoot();
+  if (root == nullptr) {
+    return id;
+  }
+  list_template_root_id_to_shell_id_[root->impl_id()] = id;
+  return root->impl_id();
+}
+
+int32_t ElementManager::ResolveTemplateElementShellIdForList(int32_t id) {
+  if (id == 0 || node_manager_ == nullptr) {
+    return id;
+  }
+  auto mapping = list_template_root_id_to_shell_id_.find(id);
+  if (mapping == list_template_root_id_to_shell_id_.end()) {
+    return id;
+  }
+  auto *element = node_manager_->Get(mapping->second);
+  if (element == nullptr || !element->is_template()) {
+    list_template_root_id_to_shell_id_.erase(mapping);
+    return id;
+  }
+  auto *template_element = static_cast<TemplateElement *>(element);
+  auto root = template_element->GetResolvedRoot();
+  if (root == nullptr || root->impl_id() != id) {
+    list_template_root_id_to_shell_id_.erase(mapping);
+    return id;
+  }
+  return mapping->second;
+}
+
+void ElementManager::CacheListItemTemplateElementTree(
+    const fml::RefPtr<TemplateElement> &element, const base::String &bundle_url,
+    const base::String &template_key) {
+  if (element == nullptr || template_key.str().empty()) {
+    return;
+  }
+  cached_template_element_trees_[TemplateElementTreeCacheKey{bundle_url,
+                                                             template_key}]
+      .emplace_back(element);
+}
+
+fml::RefPtr<TemplateElement>
+ElementManager::TakeCachedTemplateElementTreeForOwner(TemplateElement *owner) {
+  if (owner == nullptr) {
+    return nullptr;
+  }
+  for (auto bucket_iter = cached_template_element_trees_.begin();
+       bucket_iter != cached_template_element_trees_.end(); ++bucket_iter) {
+    auto &bucket = bucket_iter->second;
+    for (size_t index = bucket.size(); index > 0; --index) {
+      auto iter = bucket.begin() + static_cast<ptrdiff_t>(index - 1);
+      if (iter->get() != owner) {
+        continue;
+      }
+      auto cached = std::move(*iter);
+      bucket.erase(iter);
+      if (bucket.empty()) {
+        cached_template_element_trees_.erase(bucket_iter);
+      }
+      return cached;
+    }
+  }
+  return nullptr;
+}
+
+fml::RefPtr<TemplateElement> ElementManager::TakeCachedTemplateElementTree(
+    TemplateElement *owner, const base::String &bundle_url,
+    const base::String &template_key) {
+  auto cached = TakeCachedTemplateElementTreeForOwner(owner);
+  if (cached != nullptr) {
+    return cached;
+  }
+  return TakeCachedTemplateElementTreeForKey(bundle_url, template_key);
+}
+
+void ElementManager::RemoveCachedTemplateElementTreeForOwner(
+    TemplateElement *owner) {
+  TakeCachedTemplateElementTreeForOwner(owner);
+}
+
+fml::RefPtr<TemplateElement>
+ElementManager::TakeCachedTemplateElementTreeForKey(
+    const base::String &bundle_url, const base::String &template_key) {
+  if (template_key.str().empty()) {
+    return nullptr;
+  }
+  auto bucket_iter = cached_template_element_trees_.find(
+      TemplateElementTreeCacheKey{bundle_url, template_key});
+  if (bucket_iter == cached_template_element_trees_.end()) {
+    return nullptr;
+  }
+  auto &bucket = bucket_iter->second;
+  if (bucket.empty()) {
+    cached_template_element_trees_.erase(bucket_iter);
+    return nullptr;
+  }
+  auto cached = std::move(bucket.back());
+  bucket.pop_back();
+  if (bucket.empty()) {
+    cached_template_element_trees_.erase(bucket_iter);
+  }
+  return cached;
 }
 
 void ElementManager::OnPatchFinish(std::shared_ptr<PipelineOptions> &option,
@@ -1445,6 +1638,11 @@ void ElementManager::OnPatchFinishForFiber(
   }
   FirePostMTSRenderTasks();
   element->FlushActionsAsRoot();
+  options->list_comp_id_ =
+      ResolveTemplateElementRootIdForList(options->list_comp_id_);
+  for (auto &list_item_id : options->list_item_ids_) {
+    list_item_id = ResolveTemplateElementRootIdForList(list_item_id);
+  }
 
   BindTimingFlagToPipelineOptions(options);
 
@@ -1459,7 +1657,6 @@ void ElementManager::OnPatchFinishForFiber(
 
   if (root() && root()->EnableFragmentLayerRender()) {
     root()->element_container()->FinishTasmOperation(options);
-    root()->element_container()->Flush();
   } else {
     catalyzer_->painting_context()->FinishTasmOperation(options);
   }
@@ -1481,7 +1678,6 @@ void ElementManager::OnPatchFinishForFiber(
     if (root() && root()->EnableFragmentLayerRender()) {
       TRACE_EVENT(LYNX_TRACE_CATEGORY, ELEMENT_MANAGER_REPAINT);
       root()->element_container()->CastToFragment()->Draw();
-      root()->element_container()->Flush();
     }
     if (root() && root()->EnableFragmentLayerRender()) {
       root()->element_container()->FinishLayoutOperation(options);

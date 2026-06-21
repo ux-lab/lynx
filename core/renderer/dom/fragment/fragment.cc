@@ -5,6 +5,7 @@
 #include "core/renderer/dom/fragment/fragment.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <utility>
@@ -42,14 +43,17 @@ void Fragment::CreateLayerIfNeeded(const fml::RefPtr<PropBundle>& init_data) {
     return;
   }
 
+  const bool tends_to_flatten = element()->TendToFlatten();
   const bool can_flatten_without_platform_renderer =
-      (!element()->is_direct_child_of_compatible_component() &&
-       (element()->is_text() || element()->is_image() ||
-        element()->is_view())) &&
-      element()->TendToFlatten();
+      (!element()->is_page() &&
+       !element()->is_direct_child_of_compatible_component() &&
+       (element()->is_text() || element()->is_image() || element()->is_view() ||
+        element()->is_component())) &&
+      tends_to_flatten;
   if (can_flatten_without_platform_renderer) {
-    // If the fragment is a view, text, or image, and it tends to flatten,
-    // then it does not need to be layerized.
+    // If the fragment is a view, text, image, or component, and it tends to
+    // flatten, then it does not need to be layerized. The page must keep its
+    // platform renderer because it is the root of the PlatformRenderer tree.
     return;
   }
 
@@ -69,7 +73,7 @@ void Fragment::CreateLayerIfNeeded(const fml::RefPtr<PropBundle>& init_data) {
 
   // TODO(zhongyr): abstract one behavior for layerize.
   fml::RefPtr<PropBundle> actual_init_data = init_data;
-  if (element()->is_direct_child_of_compatible_component()) {
+  auto ensure_actual_init_data = [&actual_init_data, this]() {
     if (actual_init_data == nullptr) {
       bool use_map_buffer =
           element()->element_manager()->GetEnableUseMapBuffer();
@@ -80,8 +84,16 @@ void Fragment::CreateLayerIfNeeded(const fml::RefPtr<PropBundle>& init_data) {
               ->CreatePropBundle(use_map_buffer,
                                  element()->EnableFragmentLayerRender());
     }
-    actual_init_data->SetProps(kDirectChildOfCompatibleComponentInitDataKey,
-                               true);
+    return actual_init_data != nullptr;
+  };
+  if (ensure_actual_init_data()) {
+    actual_init_data->SetProps(kTendsToFlattenInitDataKey, tends_to_flatten);
+  }
+  if (element()->is_direct_child_of_compatible_component()) {
+    if (ensure_actual_init_data()) {
+      actual_init_data->SetProps(kDirectChildOfCompatibleComponentInitDataKey,
+                                 true);
+    }
   }
   behavior_->CreatePlatformRenderer(actual_init_data);
   has_platform_renderer_ = true;
@@ -482,7 +494,14 @@ void Fragment::DrawBackground(DisplayListBuilder& display_list_builder) {
       starlight::BackgroundClipType::kBorderBox;
   if (background_data->image_data &&
       !background_data->image_data->clip.empty()) {
-    clip_type = background_data->image_data->clip.back();
+    const auto& image_data = *background_data->image_data;
+    if (image_data.image_count == 0) {
+      // background-image defaults to one implicit none layer.
+      clip_type = image_data.clip.front();
+    } else {
+      size_t bottom_layer_index = image_data.image_count - 1;
+      clip_type = image_data.clip[bottom_layer_index % image_data.clip.size()];
+    }
   }
   switch (clip_type) {
     case starlight::BackgroundClipType::kPaddingBox:
@@ -618,6 +637,174 @@ void Fragment::DrawBackground(DisplayListBuilder& display_list_builder) {
         }
       }
     }
+  }
+}
+
+// W3C CSS Backgrounds and Borders Module Level 3
+// https://drafts.csswg.org/css-backgrounds/#shadow-shape
+// Computes the outset-adjusted border radius dimension:
+//   radius + spread * (1 - (1 - ratio)^3 * (1 - coverage^3))
+// This reduces the effect of spread on corner shape when border-radius is
+// small, ensuring continuity between round and sharp corners.
+//
+// When border-radius < spread (ratio<1), the term (1 - ratio)^3 interpolates
+// between full spread adjustment (ratio=0) and no adjustment (ratio=1).
+// When the corner occupies a small fraction of the element (coverage<1),
+// the term (1 - coverage^3) reduces the spread effect proportionally.
+// When ratio >= 1 (radius exceeds spread) or coverage > 1, the result is
+// simply radius + spread (full adjustment).
+float ComputeOutsetAdjustedRadius(float radius, float spread, float coverage) {
+  if (spread == 0.f) {
+    return radius;
+  }
+  if (spread < 0.f) {
+    return std::max(radius + spread, 0.f);
+  }
+  if (radius > spread || coverage > 1.f) {
+    return radius + spread;
+  }
+  float ratio = radius / spread;
+  float one_minus_ratio = 1.f - ratio;
+  float coverage_cubed = coverage * coverage * coverage;
+  float one_minus_coverage_cubed = 1.f - coverage_cubed;
+  return radius +
+         spread * (1.f - one_minus_ratio * one_minus_ratio * one_minus_ratio *
+                             one_minus_coverage_cubed);
+}
+
+namespace {
+
+// Computes shadow radii per W3C CSS spec:
+// - Inset: radii decrease by spread (floored at zero)
+// - Outset: radii increase by spread, with adjusted-radius formula when
+//   border-radius < spread to preserve corner sharpness.
+RoundedRectangle ComputeShadowBox(const RoundedRectangle& base_box,
+                                  float spread, float offset_x, float offset_y,
+                                  bool is_inset) {
+  RoundedRectangle shadow_box;
+  const auto& rect = base_box.GetRect();
+
+  float left, top, right, bottom;
+  if (is_inset) {
+    // Inset: contract inward by spread
+    left = rect.X() + offset_x + spread;
+    top = rect.Y() + offset_y + spread;
+    right = rect.X() + rect.Width() + offset_x - spread;
+    bottom = rect.Y() + rect.Height() + offset_y - spread;
+  } else {
+    // Outset: expand outward by spread
+    left = rect.X() + offset_x - spread;
+    top = rect.Y() + offset_y - spread;
+    right = rect.X() + rect.Width() + offset_x + spread;
+    bottom = rect.Y() + rect.Height() + offset_y + spread;
+  }
+
+  shadow_box.SetX(left);
+  shadow_box.SetY(top);
+  shadow_box.SetWidth(std::max(right - left, 0.f));
+  shadow_box.SetHeight(std::max(bottom - top, 0.f));
+
+  if (!base_box.HasRadius()) {
+    return shadow_box;
+  }
+
+  float width = rect.Width();
+  float height = rect.Height();
+
+  // Per W3C CSS spec: inset shadows shrink with positive spread and grow with
+  // negative spread; the latter uses the same outset-adjusted formula.
+  auto apply_spread_radius = [&](float rx, float ry) {
+    if (is_inset && spread > 0.f) {
+      return std::make_pair(std::max(rx - spread, 0.f),
+                            std::max(ry - spread, 0.f));
+    }
+    float outset_spread = (is_inset && spread < 0.f) ? -spread : spread;
+    if (width <= 0.f || height <= 0.f) {
+      return std::make_pair(std::max(rx + outset_spread, 0.f),
+                            std::max(ry + outset_spread, 0.f));
+    }
+    float coverage = 2.f * std::min(rx / width, ry / height);
+    if (!std::isfinite(coverage)) {
+      coverage = 2.f;  // force fast-path in ComputeOutsetAdjustedRadius
+    }
+    float adjusted_x = ComputeOutsetAdjustedRadius(rx, outset_spread, coverage);
+    float adjusted_y = ComputeOutsetAdjustedRadius(ry, outset_spread, coverage);
+    return std::make_pair(adjusted_x, adjusted_y);
+  };
+
+  auto [tl_x, tl_y] = apply_spread_radius(base_box.GetRadiusXTopLeft(),
+                                          base_box.GetRadiusYTopLeft());
+  shadow_box.SetRadiusXTopLeft(tl_x);
+  shadow_box.SetRadiusYTopLeft(tl_y);
+
+  auto [tr_x, tr_y] = apply_spread_radius(base_box.GetRadiusXTopRight(),
+                                          base_box.GetRadiusYTopRight());
+  shadow_box.SetRadiusXTopRight(tr_x);
+  shadow_box.SetRadiusYTopRight(tr_y);
+
+  auto [br_x, br_y] = apply_spread_radius(base_box.GetRadiusXBottomRight(),
+                                          base_box.GetRadiusYBottomRight());
+  shadow_box.SetRadiusXBottomRight(br_x);
+  shadow_box.SetRadiusYBottomRight(br_y);
+
+  auto [bl_x, bl_y] = apply_spread_radius(base_box.GetRadiusXBottomLeft(),
+                                          base_box.GetRadiusYBottomLeft());
+  shadow_box.SetRadiusXBottomLeft(bl_x);
+  shadow_box.SetRadiusYBottomLeft(bl_y);
+
+  return shadow_box;
+}
+
+}  // namespace
+
+void Fragment::DrawBoxShadow(DisplayListBuilder& display_list_builder) {
+  const auto& box_shadow_data =
+      element()->computed_css_style()->GetBoxShadowData();
+  if (!box_shadow_data.has_value()) {
+    return;
+  }
+
+  // CSS box-shadow list is specified front-to-back: the first shadow is on
+  // top. To achieve this with painter's algorithm, draw the shadows in reverse
+  // order so the first declared shadow is emitted last.
+  for (auto it = box_shadow_data->rbegin(); it != box_shadow_data->rend();
+       ++it) {
+    const auto& shadow = *it;
+    bool is_inset = shadow.option == starlight::ShadowOption::kInset;
+    DisplayListBuilder::BoxShadowClipMode clip_mode =
+        is_inset ? DisplayListBuilder::BoxShadowClipMode::kInset
+                 : DisplayListBuilder::BoxShadowClipMode::kOutset;
+
+    // Per W3C spec:
+    // - Outset shadows use border-box as base shape
+    // - Inset shadows use padding-box as base shape
+    RoundedRectangle base_box;
+    int32_t clip_box_index;
+    if (is_inset) {
+      base_box = layout_info_.GeneratePaddingRectangle();
+      clip_box_index = DefinePaddingBox(display_list_builder);
+    } else {
+      base_box = layout_info_.GenerateBorderRectangle();
+      clip_box_index = DefineBorderBox(display_list_builder);
+    }
+
+    // Compute shadow geometry (rect + radii) per W3C CSS spec
+    RoundedRectangle shadow_box = ComputeShadowBox(
+        base_box, shadow.spread, shadow.h_offset, shadow.v_offset, is_inset);
+
+    // Skip if spread inverts the rect (inset only)
+    if (is_inset &&
+        (shadow_box.GetWidth() <= 0.f || shadow_box.GetHeight() <= 0.f)) {
+      continue;
+    }
+
+    // Record shadow box to display list
+    int32_t shadow_box_index = -1;
+    display_list_builder.RecordBoxModel(shadow_box, shadow_box_index);
+
+    // Emit BoxShadow operation with pre-computed shadow box
+    display_list_builder.BoxShadow(shadow_box_index, clip_box_index,
+                                   shadow.color, shadow.blur, clip_mode);
   }
 }
 
@@ -783,12 +970,33 @@ bool Fragment::IsReliableSibling() const {
          fragment_from_element_parent() == nullptr;
 }
 
+namespace {
+
+bool IsValidExposurePropValue(PlatformEventPropName name,
+                              const lepus::Value& value) {
+  if (name == PlatformEventPropName::kExposureId) {
+    return value.IsString() || value.IsNumber();
+  }
+  if (name == PlatformEventPropName::kExposureScene) {
+    return value.IsString();
+  }
+  return false;
+}
+
+}  // namespace
+
 void Fragment::SetEventProp(PlatformEventPropName name,
                             const lepus::Value& value) {
   if (name == PlatformEventPropName::kUnknown) {
     return;
   }
+  auto it = event_props_.find(name);
+  if (!IsValidExposurePropValue(name, value) && it != event_props_.end() &&
+      it->second.IsEqual(value)) {
+    return;
+  }
   event_props_.insert_or_assign(name, value);
+  event_bundle_dirty_ = true;
 }
 
 void Fragment::ClearEventProps() {
@@ -796,6 +1004,7 @@ void Fragment::ClearEventProps() {
     return;
   }
   event_props_.clear();
+  event_bundle_dirty_ = true;
 }
 
 void Fragment::AddEventName(PlatformEventName name) {
@@ -808,6 +1017,7 @@ void Fragment::AddEventName(PlatformEventName name) {
     }
   }
   event_names_.push_back(name);
+  event_bundle_dirty_ = true;
 }
 
 void Fragment::ClearEventNames() {
@@ -815,6 +1025,7 @@ void Fragment::ClearEventNames() {
     return;
   }
   event_names_.clear();
+  event_bundle_dirty_ = true;
 }
 
 void Fragment::MarkHasExposureEventIfNeeded() const {
@@ -891,10 +1102,14 @@ void Fragment::DrawFull(DisplayListBuilder& display_list_builder) {
                              layout_info_.layout_result.size_.width_,
                              layout_info_.layout_result.size_.height_);
 
-  painting_context()->impl()->CastToNativeCtx()->UpdatePlatformEventBundle(
-      id(), PlatformEventBundle(event_props_, event_names_));
+  if (event_bundle_dirty_) {
+    painting_context()->impl()->CastToNativeCtx()->UpdatePlatformEventBundle(
+        id(), PlatformEventBundle(event_props_, event_names_));
+    event_bundle_dirty_ = false;
+  }
 
   DrawBackground(display_list_builder);
+  DrawBoxShadow(display_list_builder);
   DrawBorder(display_list_builder);
   DrawClip(display_list_builder);
 

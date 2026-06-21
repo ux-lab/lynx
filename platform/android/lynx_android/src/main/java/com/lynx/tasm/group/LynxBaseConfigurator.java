@@ -10,6 +10,7 @@ import com.lynx.tasm.EmbeddedMode;
 import com.lynx.tasm.IUIRendererCreator;
 import com.lynx.tasm.LynxBackgroundRuntimeOptions;
 import com.lynx.tasm.LynxBooleanOption;
+import com.lynx.tasm.LynxColorScheme;
 import com.lynx.tasm.LynxEnv;
 import com.lynx.tasm.LynxGroup;
 import com.lynx.tasm.LynxViewBuilder;
@@ -28,63 +29,31 @@ import java.util.HashMap;
 import java.util.List;
 
 public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
-  protected static Float defaultDensity = null;
-
-  // Runtime, registry, and renderer factories.
-  protected LynxBackgroundRuntimeOptions lynxRuntimeOptions;
-  protected boolean hasLynxRuntimeOptionsSet = false;
-
-  protected BehaviorRegistry behaviorRegistry;
-  protected boolean hasBehaviorRegistrySet = false;
-
-  protected IUIRendererCreator uiRendererCreator;
-  protected boolean hasUIRendererCreatorSet = false;
-
-  // Layout, viewport, and sizing.
-  protected Float densityOverride;
-  protected boolean hasDensitySet = false;
-
-  protected ThreadStrategyForRendering threadStrategy = null;
-
-  protected int screenWidth = DisplayMetricsHolder.UNDEFINE_SCREEN_SIZE_VALUE;
-  protected int screenHeight = DisplayMetricsHolder.UNDEFINE_SCREEN_SIZE_VALUE;
-  protected boolean hasScreenSizeSet = false;
-
-  protected boolean hasPresetMeasureSpec = false;
-  protected int presetWidthMeasureSpec;
-  protected int presetHeightMeasureSpec;
-
-  protected float fontScale = 1.0f;
-  protected boolean hasFontScaleSet = false;
-
-  protected HashMap<String, Object> mContextData;
-
-  // Lifecycle and rendering switches.
-  protected boolean enableAutoExpose;
-  protected boolean hasEnableAutoExposeSet = false;
-
-  protected boolean enableLayoutSafepoint;
-  protected boolean hasEnableLayoutSafepointSet = false;
-
-  protected boolean enableUnifiedPipeline;
-  protected boolean hasEnableUnifiedPipelineSet = false;
-
-  protected boolean forceDarkAllowed = false;
-  protected boolean hasForceDarkAllowedSet = false;
-
   protected boolean enableMultiAsyncThread = true;
   protected boolean hasEnableMultiAsyncThreadSet = false;
-
+  protected Float densityOverride;
+  protected boolean hasDensitySet = false;
+  protected BehaviorRegistry behaviorRegistry;
+  protected boolean hasBehaviorRegistrySet = false;
+  protected LynxBackgroundRuntimeOptions lynxRuntimeOptions;
+  protected boolean enableAutoExpose;
+  protected boolean hasEnableAutoExposeSet = false;
+  protected boolean enableLayoutSafepoint;
+  protected boolean hasEnableLayoutSafepointSet = false;
+  protected boolean enableUnifiedPipeline;
+  protected boolean hasEnableUnifiedPipelineSet = false;
+  protected boolean forceDarkAllowed = false;
+  protected boolean hasForceDarkAllowedSet = false;
   protected boolean enableSyncFlush = false;
   protected boolean hasEnableSyncFlushSet = false;
-
   @Deprecated protected boolean enableAutoConcurrency = false;
-
   protected boolean enableVSyncAlignedMessageLoop = false;
   protected boolean hasEnableVSyncAlignedMessageLoopSet = false;
-
   protected boolean enablePendingJsTask = false;
   protected boolean hasPendingJsTaskSet = false;
+  protected boolean hasPresetMeasureSpec = false;
+
+  static Float defaultDensity = null;
 
   /**
    * enable async hydration of ssr.
@@ -107,17 +76,31 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   protected boolean enableAirStrictMode = false;
   protected boolean hasEnableAirStrictModeSet = false;
-
   protected boolean debuggable = false;
   protected boolean hasDebuggableSet = false;
+  protected int presetWidthMeasureSpec;
+  protected int presetHeightMeasureSpec;
+  protected float fontScale = 1.0f;
+  protected boolean hasFontScaleSet = false;
+
+  protected LynxColorScheme colorScheme = LynxColorScheme.LIGHT;
+  protected boolean hasColorSchemeSet = false;
 
   protected boolean enablePreUpdateData = false;
   protected boolean hasEnablePreUpdateDataSet = false;
+  protected HashMap<String, Object> mContextData;
 
-  // UI integration options.
+  protected ThreadStrategyForRendering threadStrategy = null;
+
+  protected int screenWidth = DisplayMetricsHolder.UNDEFINE_SCREEN_SIZE_VALUE;
+  protected int screenHeight = DisplayMetricsHolder.UNDEFINE_SCREEN_SIZE_VALUE;
+  protected boolean hasScreenSizeSet = false;
+
+  protected IUIRendererCreator uiRendererCreator;
+  protected boolean hasUIRendererCreatorSet = false;
+
   protected int embeddedMode = EmbeddedMode.UNSET;
   protected boolean hasEmbeddedModeSet = false;
-
   protected boolean enableMTSModule = false;
   protected boolean hasEnableMTSModuleSet = false;
 
@@ -220,7 +203,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public T setEnableUserBytecode(boolean enableUserBytecode) {
     this.lynxRuntimeOptions.setEnableUserBytecode(enableUserBytecode);
-    this.hasLynxRuntimeOptionsSet = true;
     return (T) this;
   }
 
@@ -235,7 +217,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public T setBytecodeSourceUrl(String url) {
     this.lynxRuntimeOptions.setBytecodeSourceUrl(url);
-    this.hasLynxRuntimeOptionsSet = true;
     return (T) this;
   }
 
@@ -283,7 +264,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
 
   public T setLynxGroup(@Nullable LynxGroup group) {
     lynxRuntimeOptions.setLynxGroup(group);
-    hasLynxRuntimeOptionsSet = true;
     return (T) this;
   }
 
@@ -307,7 +287,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void registerModule(String name, Class<? extends LynxModule> module, Object param) {
     lynxRuntimeOptions.registerModule(name, module, param);
-    hasLynxRuntimeOptionsSet = true;
   }
 
   /**
@@ -317,7 +296,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void registerModuleAuthValidator(LynxModule.AuthValidator authValidator) {
     lynxRuntimeOptions.registerModuleAuthValidator(authValidator);
-    hasLynxRuntimeOptionsSet = true;
   }
 
   /**
@@ -362,7 +340,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void setGenericResourceFetcher(@NonNull LynxGenericResourceFetcher fetcher) {
     this.lynxRuntimeOptions.setGenericResourceFetcher(fetcher);
-    this.hasLynxRuntimeOptionsSet = true;
   }
 
   /**
@@ -371,7 +348,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void setMediaResourceFetcher(@NonNull LynxMediaResourceFetcher fetcher) {
     this.lynxRuntimeOptions.setMediaResourceFetcher(fetcher);
-    this.hasLynxRuntimeOptionsSet = true;
   }
 
   /**
@@ -380,7 +356,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void setTemplateResourceFetcher(@NonNull LynxTemplateResourceFetcher fetcher) {
     this.lynxRuntimeOptions.setTemplateResourceFetcher(fetcher);
-    this.hasLynxRuntimeOptionsSet = true;
   }
 
   /**
@@ -389,7 +364,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
    */
   public void setEnableGenericResourceFetcher(LynxBooleanOption enabled) {
     this.lynxRuntimeOptions.setEnableGenericResourceFetcher(enabled);
-    this.hasLynxRuntimeOptionsSet = true;
   }
 
   public T setForceDarkAllowed(boolean allowed) {
@@ -521,6 +495,15 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
     return (T) this;
   }
 
+  public T setColorScheme(LynxColorScheme scheme) {
+    if (scheme == null) {
+      return (T) this;
+    }
+    colorScheme = scheme;
+    hasColorSchemeSet = true;
+    return (T) this;
+  }
+
   /**
    * Control whether updateData can take effect before loadTemplate
    *
@@ -559,7 +542,6 @@ public class LynxBaseConfigurator<T extends LynxBaseConfigurator<T>> {
 
   public T setResourceProvider(String key, LynxResourceProvider provider) {
     lynxRuntimeOptions.setResourceProviders(key, provider);
-    hasLynxRuntimeOptionsSet = true;
     return (T) this;
   }
 

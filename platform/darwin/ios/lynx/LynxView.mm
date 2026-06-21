@@ -50,6 +50,12 @@
 
 @end
 
+@interface LynxTemplateRender (LynxElement)
+
+- (void)getLynxElementRoot:(void (^_Nonnull)(LynxElement* _Nullable element))callback;
+
+@end
+
 @implementation LynxView
 
 @synthesize rendererContext = _rendererContext;
@@ -461,6 +467,12 @@
                                                     : lynx::shell::kUnknownInstanceId)];
 }
 
+- (void)updateColorScheme:(LynxColorScheme)scheme {
+  if (_templateRender != nil) {
+    [_templateRender updateColorScheme:scheme];
+  }
+}
+
 - (void)pauseRootLayoutAnimation {
   RUN_RENDER_SAFELY([_templateRender pauseRootLayoutAnimation];);
 }
@@ -570,6 +582,19 @@
   } else {
     return nil;
   }
+}
+
+- (void)getLynxElementRoot:(void (^_Nonnull)(LynxElement* _Nullable element))callback {
+  if (callback == nil) {
+    return;
+  }
+  if (_templateRender == nil) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      callback(nil);
+    });
+    return;
+  }
+  [_templateRender getLynxElementRoot:callback];
 }
 
 #pragma mark - Setter & Getter

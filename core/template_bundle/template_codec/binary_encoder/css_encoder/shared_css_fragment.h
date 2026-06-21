@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/include/value/base_value.h"
 #include "core/renderer/css/shared_css_fragment.h"
 #include "core/template_bundle/template_codec/binary_encoder/css_encoder/css_font_face_token.h"
 #include "core/template_bundle/template_codec/binary_encoder/css_encoder/css_keyframes_token.h"
@@ -34,18 +35,16 @@ struct LynxCSSSelectorTuple {
 };
 
 struct LynxStyleRuleBase {
-  using RuleType = tasm::CSSRuleType;
-
-  explicit LynxStyleRuleBase(RuleType t) : type(t) {}
+  explicit LynxStyleRuleBase(tasm::CSSRuleType t) : type(t) {}
   virtual ~LynxStyleRuleBase() = default;
-  RuleType type = RuleType::kUnknown;
+  tasm::CSSRuleType type = tasm::CSSRuleType::kUnknown;
 };
 
 struct LynxStyleRule : LynxStyleRuleBase {
   LynxStyleRule(size_t size, size_t pos,
                 std::unique_ptr<css::LynxCSSSelector[]> arr,
                 fml::RefPtr<tasm::CSSParseToken> properties)
-      : LynxStyleRuleBase(RuleType::kStyle),
+      : LynxStyleRuleBase(tasm::CSSRuleType::kStyle),
         flattened_size(size),
         position(pos),
         selector_arr(std::move(arr)),
@@ -59,22 +58,34 @@ struct LynxStyleRule : LynxStyleRuleBase {
 
 struct LynxStyleRuleGroup : LynxStyleRuleBase {
   std::vector<std::unique_ptr<LynxStyleRuleBase>> child_rules;
-  explicit LynxStyleRuleGroup(RuleType t) : LynxStyleRuleBase(t) {}
+  explicit LynxStyleRuleGroup(tasm::CSSRuleType t) : LynxStyleRuleBase(t) {}
 };
 
 struct LynxStyleRuleCondition : LynxStyleRuleGroup {
-  explicit LynxStyleRuleCondition(RuleType t) : LynxStyleRuleGroup(t) {}
-  std::string condition;
+  explicit LynxStyleRuleCondition(tasm::CSSRuleType t)
+      : LynxStyleRuleGroup(t) {}
+  lepus::Value condition_value;
+};
+
+struct LynxStyleRuleLayer : LynxStyleRuleGroup {
+  explicit LynxStyleRuleLayer(tasm::CSSRuleType t) : LynxStyleRuleGroup(t) {}
+  std::vector<std::string> name;
+  // `layer_position` is the **document position** assigned by the parser as
+  // it walks @layer rules in source order (per fragment). It is NOT the
+  // CSS cascade priority.
+  size_t layer_position = 0;
 };
 
 struct LynxStyleRuleFontFace : LynxStyleRuleBase {
-  explicit LynxStyleRuleFontFace() : LynxStyleRuleBase(RuleType::kFontFace) {}
+  explicit LynxStyleRuleFontFace()
+      : LynxStyleRuleBase(tasm::CSSRuleType::kFontFace) {}
   std::string family;
-  std::vector<std::shared_ptr<tasm::CSSFontFaceToken>> properties;
+  lepus::Value font_face_rule;
 };
 
 struct LynxStyleRuleKeyframes : LynxStyleRuleBase {
-  explicit LynxStyleRuleKeyframes() : LynxStyleRuleBase(RuleType::kKeyframes) {}
+  explicit LynxStyleRuleKeyframes()
+      : LynxStyleRuleBase(tasm::CSSRuleType::kKeyframes) {}
   std::string name;
   fml::RefPtr<CSSKeyframesToken> properties;
 };

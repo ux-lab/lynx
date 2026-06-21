@@ -12,9 +12,12 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import com.lynx.tasm.LynxEnv;
 import com.lynx.tasm.LynxSubErrorCode;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import org.junit.Before;
 import org.junit.Test;
@@ -36,6 +39,7 @@ public class DevToolSettingsTest {
 
     mSettings = DevToolSettings.inst();
     mSettings.init(mContext);
+    mSettings.resetNonPersistedSettingsForTesting();
     mSettings.syncToNative();
   }
 
@@ -80,6 +84,58 @@ public class DevToolSettingsTest {
 
     SharedPreferences sp = mContext.getSharedPreferences("lynx_env_config", Context.MODE_PRIVATE);
     assertFalse(sp.getBoolean(DevToolSettings.SP_KEY_ENABLE_LOGBOX, true));
+  }
+
+  @Test
+  public void testBootstrapSettingsAreNotPersisted() {
+    DevToolSettings.BootstrapSettings bootstrapSettings = mSettings.bootstrap();
+    assertFalse(bootstrapSettings.isLynxDebugEnabled());
+    assertFalse(bootstrapSettings.isLogBoxEnabled());
+    assertFalse(bootstrapSettings.shouldLoadQJSBridge());
+    assertFalse(bootstrapSettings.shouldLoadV8Bridge());
+
+    SharedPreferences sp = mContext.getSharedPreferences("lynx_env_config", Context.MODE_PRIVATE);
+    Map<String, ?> before = new HashMap<>(sp.getAll());
+
+    bootstrapSettings.setLynxDebugEnabled(true);
+    bootstrapSettings.setLogBoxEnabled(true);
+    bootstrapSettings.setLoadQJSBridge(true);
+    bootstrapSettings.setLoadV8Bridge(true);
+
+    assertTrue(bootstrapSettings.isLynxDebugEnabled());
+    assertTrue(bootstrapSettings.isLogBoxEnabled());
+    assertTrue(bootstrapSettings.shouldLoadQJSBridge());
+    assertTrue(bootstrapSettings.shouldLoadV8Bridge());
+
+    sp = mContext.getSharedPreferences("lynx_env_config", Context.MODE_PRIVATE);
+    assertEquals(before, sp.getAll());
+  }
+
+  @Test
+  public void testApplyDevelopmentDefaultsIfUnset() {
+    DevToolSettings.BootstrapSettings bootstrapSettings = mSettings.bootstrap();
+    bootstrapSettings.applyDevelopmentDefaultsIfUnset();
+
+    assertTrue(bootstrapSettings.isLynxDebugEnabled());
+    assertTrue(bootstrapSettings.isLogBoxEnabled());
+    assertTrue(bootstrapSettings.shouldLoadQJSBridge());
+    assertTrue(bootstrapSettings.shouldLoadV8Bridge());
+  }
+
+  @Test
+  public void testApplyDevelopmentDefaultsIfUnsetDoesNotOverrideHostSettings() {
+    DevToolSettings.BootstrapSettings bootstrapSettings = mSettings.bootstrap();
+    bootstrapSettings.setLynxDebugEnabled(false);
+    bootstrapSettings.setLogBoxEnabled(false);
+    bootstrapSettings.setLoadQJSBridge(false);
+    bootstrapSettings.setLoadV8Bridge(false);
+
+    bootstrapSettings.applyDevelopmentDefaultsIfUnset();
+
+    assertFalse(bootstrapSettings.isLynxDebugEnabled());
+    assertFalse(bootstrapSettings.isLogBoxEnabled());
+    assertFalse(bootstrapSettings.shouldLoadQJSBridge());
+    assertFalse(bootstrapSettings.shouldLoadV8Bridge());
   }
 
   @Test
@@ -190,5 +246,56 @@ public class DevToolSettingsTest {
 
     assertTrue(mSettings.getEnabledCDPDomains().isEmpty());
     assertFalse(mSettings.isCDPDomainEnabled(DevToolSettings.SP_KEY_ENABLE_DEVTOOL));
+  }
+
+  @Test
+  public void testGetCallerBacktraceSkipsVmStackForDevToolSettingsFallback() {
+    // Simulate the fallback path where Thread#getStackTrace inserts VMStack and the direct setter
+    // match is missing. The shared helper should still land on the first business frame.
+    StackTraceElement[] stackTrace = new StackTraceElement[] {
+        new StackTraceElement("dalvik.system.VMStack", "getThreadStackTrace", "VMStack.java", 2),
+        new StackTraceElement(Thread.class.getName(), "getStackTrace", "Thread.java", 1619),
+        new StackTraceElement(
+            DevToolSettings.class.getName(), "getEnableCaller", "DevToolSettings.java", 515),
+        new StackTraceElement(LynxEnv.class.getName(), "setLynxDebugEnabled", "LynxEnv.java", 700),
+        new StackTraceElement("com.example.business.DevToolSwitcher", "enableFromSettings",
+            "DevToolSwitcher.java", 42),
+        new StackTraceElement(
+            "com.example.business.PageInitializer", "initialize", "PageInitializer.java", 18),
+    };
+
+    String backtrace =
+        DevToolSettings.getCallerBacktrace(stackTrace, DevToolSettings.class.getName(),
+            "setDevToolEnabled", new String[] {LynxEnv.class.getName()},
+            new String[] {
+                Thread.class.getName(), DevToolSettings.class.getName(), LynxEnv.class.getName()});
+
+    assertEquals(
+        "com.example.business.DevToolSwitcher.enableFromSettings(DevToolSwitcher.java:42)\n"
+            + "com.example.business.PageInitializer.initialize(PageInitializer.java:18)",
+        backtrace);
+  }
+
+  @Test
+  public void testGetCallerBacktraceSkipsVmStackForLynxEnvFallback() {
+    // LynxEnv uses the same fallback helper but does not need to skip an extra wrapper frame after
+    // the matched method. This verifies both call sites stay aligned on the shared logic.
+    StackTraceElement[] stackTrace = new StackTraceElement[] {
+        new StackTraceElement("dalvik.system.VMStack", "getThreadStackTrace", "VMStack.java", 2),
+        new StackTraceElement(Thread.class.getName(), "getStackTrace", "Thread.java", 1619),
+        new StackTraceElement(LynxEnv.class.getName(), "getDirectCaller", "LynxEnv.java", 784),
+        new StackTraceElement(
+            "com.example.business.LynxDebugBridge", "enableDebug", "LynxDebugBridge.java", 27),
+        new StackTraceElement(
+            "com.example.business.PageInitializer", "initialize", "PageInitializer.java", 18),
+    };
+
+    String backtrace = DevToolSettings.getCallerBacktrace(stackTrace, LynxEnv.class.getName(),
+        "setLynxDebugEnabled", new String[0],
+        new String[] {Thread.class.getName(), LynxEnv.class.getName()});
+
+    assertEquals("com.example.business.LynxDebugBridge.enableDebug(LynxDebugBridge.java:27)\n"
+            + "com.example.business.PageInitializer.initialize(PageInitializer.java:18)",
+        backtrace);
   }
 }

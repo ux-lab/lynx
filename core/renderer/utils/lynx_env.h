@@ -84,6 +84,7 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
     ENABLE_NEW_ANIMATOR_FIBER,
     POST_DATA_BEFORE_UPDATE,
     ENABLE_REPORT_LIST_ITEM_LIFE_STATISTIC,
+    ENABLE_NATIVE_LIST,
     ENABLE_NATIVE_LIST_NESTED,
     ASYNC_DESTROY_ENGINE_COUNT,
     CONCURRENT_LOOP_HIGH_PRIORITY_WORKER_COUNT_PERCENT,
@@ -122,7 +123,6 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
     FIX_OLD_FIXED_INSERT_SELF_USE_RENDER_PARENT,
     FIX_FIBER_REINSERT_DETACH_FROM_OLD_RENDER_PARENT,
     FIX_FILTER_DYNAMIC_UPDATE_BUG,
-    ENABLE_GC_ONCE_ON_IDLE,
     ENABLE_CSS_INLINE_VARIABLES,
     ENABLE_OPTIMIZE_HAS_OPACITY,
     DISABLE_JS_MODE_STRIP,
@@ -159,6 +159,8 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
     ENABLE_FRAME_NATIVE_DATA,
     ENABLE_READABLE_STREAM_MEM_FIX,
     ENABLE_ELEMENT_API_NEW_REGISTRATION,
+    ENABLE_HARMONY_TEXT_CUSTOM_EMOJI,
+    ENABLE_ELEMENT_INVOKE_UI_METHOD_PENDING_TASK,
     // Please add new enum values above
     END_MARK,  // Keep this as the last enum value, and do not use
   };
@@ -254,6 +256,7 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
             {Key::POST_DATA_BEFORE_UPDATE, "post_data_before_update"},
             {Key::ENABLE_REPORT_LIST_ITEM_LIFE_STATISTIC,
              "enable_report_list_item_life_statistic"},
+            {Key::ENABLE_NATIVE_LIST, "enable_native_list"},
             {Key::ENABLE_NATIVE_LIST_NESTED, "enable_native_list_nested"},
             {Key::ASYNC_DESTROY_ENGINE_COUNT, "async_destroy_engine_count"},
             {Key::CONCURRENT_LOOP_HIGH_PRIORITY_WORKER_COUNT_PERCENT,
@@ -292,7 +295,6 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
              "disable_list_callback_if_detached"},
             {Key::FIX_RADON_TRANSITION_PROPERTY_REMOVE_BUG,
              "fix_radon_transition_property_remove_bug"},
-            {Key::ENABLE_GC_ONCE_ON_IDLE, "enable_gc_once_on_idle"},
             {Key::ENABLE_CSS_INLINE_VARIABLES, "enable_css_inline_variables"},
             {Key::ENABLE_OPTIMIZE_HAS_OPACITY, "enable_optimize_has_opacity"},
             {Key::DISABLE_JS_MODE_STRIP, "disable_js_mode_strip"},
@@ -335,6 +337,10 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
              "enable_readable_stream_mem_fix"},
             {Key::ENABLE_ELEMENT_API_NEW_REGISTRATION,
              "enable_element_api_new_registration"},
+            {Key::ENABLE_HARMONY_TEXT_CUSTOM_EMOJI,
+             "enable_harmony_text_custom_emoji"},
+            {Key::ENABLE_ELEMENT_INVOKE_UI_METHOD_PENDING_TASK,
+             "enable_element_invoke_ui_method_pending_task"},
         });
     auto it = (*env_key_to_string_map).find(key);
     DCHECK(it != (*env_key_to_string_map).end());
@@ -356,6 +362,8 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
   constexpr static const char* const kLynxEnableV8 = "enable_v8";
   constexpr static const char* const kLynxEnableLongPressMenu =
       "enable_long_press_menu";
+  constexpr static const char* const kLynxEnableHighlightTouch =
+      "enable_highlight_touch";
   constexpr static const char* const kLynxEnableTableDeepCheck =
       "enable_table_deep_check";
   constexpr static const char* const kLynxEnableLogBox = "enable_logbox";
@@ -460,6 +468,7 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
   bool EnableUseMapBufferForUIProps();
   bool EnablePostDataBeforeUpdateTemplate();
   bool EnableReportListItemLifeStatistic();
+  bool EnableNativeList();
   bool EnableNativeListNested();
   int32_t EnableAsyncDestroyEngine();
   bool EnableComponentAsyncDecode();
@@ -482,7 +491,6 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
   bool EnableDecoupledList();
   bool DisableListCallbackIfDetached();
   bool FixRadonTransitionPropertyRemoveBug();
-  uint32_t EnableGCOnceOnIdle();
   bool EnableCSSInlineVariables();
   bool EnableOptimizeHasOpacity();
   bool DisableJSModeStrip();
@@ -507,7 +515,9 @@ class LYNX_EXPORT_FOR_DEVTOOL LynxEnv {
   bool EnableNewStylingPipeline();
   bool EnableFrameNativeData();
   bool EnableReadableStreamMemFix();
+  bool EnableHarmonyTextCustomEmoji();
   bool EnableElementApiNewRegistration();
+  bool EnableElementInvokeUIMethodPendingTask();
 
   LynxEnv(const LynxEnv&) = delete;
   LynxEnv& operator=(const LynxEnv&) = delete;
